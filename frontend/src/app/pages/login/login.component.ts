@@ -34,15 +34,23 @@ export class LoginComponent {
       return;
     }
 
-    const { email, password } = this.loginForm.getRawValue();
+    const {
+      email,
+      password
+    } = this.loginForm.getRawValue();
 
-    const success = this.auth.login(email, password);
+    this.auth
+      .login(email, password)
+      .subscribe({
+        next: () => {
+          this.router.navigate(['/dashboard']);
+        },
 
-    if (!success) {
-      this.error = 'Invalid email or password.';
-      return;
-    }
-
-    this.router.navigate(['/dashboard']);
+        error: error => {
+          this.error =
+            error?.error?.message ||
+            'Unable to sign in.';
+        }
+      });
   }
 }

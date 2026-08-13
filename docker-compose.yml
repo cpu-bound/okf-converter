@@ -1,9 +1,73 @@
 services:
-  angular-auth:
+
+  frontend:
     build:
-      context: .
+      context: ./frontend
       dockerfile: Dockerfile
-    container_name: angular-auth
+
+    container_name: angular-auth-frontend
+
     ports:
       - "8080:80"
+
+    depends_on:
+      api:
+        condition: service_started
+
     restart: unless-stopped
+
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+
+    container_name: angular-auth-api
+
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+
+      DATABASE_URL: >-
+        postgresql://auth_user:auth_password@db:5432/auth_db
+
+      JWT_SECRET: >-
+        change-this-to-a-long-random-production-secret
+
+      FRONTEND_URL: http://localhost:8080
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
+  db:
+    image: postgres:17-alpine
+
+    container_name: angular-auth-db
+
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      POSTGRES_PASSWORD: auth_password
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U auth_user -d auth_db
+
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    restart: unless-stopped
+
+
+volumes:
+  postgres_data:

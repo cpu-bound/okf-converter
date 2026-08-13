@@ -36,11 +36,28 @@ export class RegisterComponent {
       return;
     }
 
-    const { name, email, password } =
-      this.registerForm.getRawValue();
+    const {
+      name,
+      email,
+      password
+    } = this.registerForm.getRawValue();
 
-    this.auth.register(name, email, password);
+    this.auth
+      .register(
+        name,
+        email,
+        password
+      )
+      .subscribe({
+        next: () => {
+          this.router.navigate(['/dashboard']);
+        },
 
-    this.router.navigate(['/dashboard']);
+        error: error => {
+          this.error =
+            error?.error?.message ||
+            'Unable to create account.';
+        }
+      });
   }
 }
