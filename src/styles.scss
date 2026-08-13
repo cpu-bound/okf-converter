@@ -1,1 +1,477 @@
-/* You can add global styles to this file, and also import other style files */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color: #172033;
+  background: #f5f7fb;
+}
+
+body {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: #635bff;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Authentication */
+
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+
+  background:
+    radial-gradient(
+      circle at top left,
+      rgba(99, 91, 255, 0.18),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at bottom right,
+      rgba(56, 189, 248, 0.14),
+      transparent 35%
+    ),
+    #f5f7fb;
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 40px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e7eaf0;
+  border-radius: 24px;
+  box-shadow:
+    0 20px 60px rgba(31, 41, 55, 0.1);
+}
+
+.brand {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.brand-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 15px;
+
+  color: white;
+  font-size: 24px;
+  font-weight: 800;
+
+  background: linear-gradient(
+    135deg,
+    #635bff,
+    #8b5cf6
+  );
+
+  box-shadow:
+    0 10px 25px rgba(99, 91, 255, 0.28);
+}
+
+.brand-icon.small {
+  width: 38px;
+  height: 38px;
+  margin: 0;
+  border-radius: 11px;
+  font-size: 18px;
+}
+
+.brand h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  letter-spacing: -0.7px;
+}
+
+.brand p {
+  margin: 0;
+  color: #687386;
+}
+
+/* Forms */
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label,
+.password-label label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+}
+
+input[type="email"],
+input[type="text"],
+input[type="password"] {
+  width: 100%;
+  height: 50px;
+  padding: 0 15px;
+
+  border: 1px solid #d9dee8;
+  border-radius: 12px;
+  outline: none;
+
+  color: #172033;
+  background: white;
+
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+
+input:focus {
+  border-color: #635bff;
+  box-shadow:
+    0 0 0 4px rgba(99, 91, 255, 0.1);
+}
+
+input::placeholder {
+  color: #a3abb8;
+}
+
+.password-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.password-label label {
+  margin-bottom: 8px;
+}
+
+.password-label a {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.password-wrapper {
+  position: relative;
+}
+
+.password-wrapper input {
+  padding-right: 70px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+
+  border: 0;
+  background: transparent;
+
+  color: #635bff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.field-error {
+  display: block;
+  margin-top: 6px;
+  color: #dc2626;
+  font-size: 12px;
+}
+
+.primary-button {
+  width: 100%;
+  height: 50px;
+
+  border: 0;
+  border-radius: 12px;
+
+  color: white;
+  background: linear-gradient(
+    135deg,
+    #635bff,
+    #7c3aed
+  );
+
+  font-weight: 700;
+
+  box-shadow:
+    0 8px 20px rgba(99, 91, 255, 0.22);
+
+  transition:
+    transform 0.15s,
+    box-shadow 0.15s;
+}
+
+.primary-button:hover {
+  transform: translateY(-1px);
+
+  box-shadow:
+    0 12px 25px rgba(99, 91, 255, 0.3);
+}
+
+.checkbox {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 4px 0 22px;
+
+  color: #667085;
+  font-size: 13px;
+}
+
+.checkbox input {
+  margin-top: 2px;
+  accent-color: #635bff;
+}
+
+/* Messages */
+
+.alert {
+  margin-bottom: 20px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+}
+
+.alert.error {
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 28px 0;
+  color: #98a2b3;
+  font-size: 13px;
+}
+
+.divider::before,
+.divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: #e7eaf0;
+}
+
+.signup-text {
+  margin: 0;
+  text-align: center;
+  color: #687386;
+  font-size: 14px;
+}
+
+.signup-text a {
+  font-weight: 600;
+}
+
+.demo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  margin-top: 24px;
+  padding: 14px;
+
+  border-radius: 12px;
+
+  background: #f7f7ff;
+
+  text-align: center;
+  color: #687386;
+  font-size: 12px;
+}
+
+.demo-info strong {
+  color: #635bff;
+}
+
+/* Success */
+
+.success-message {
+  text-align: center;
+  padding: 10px 0 20px;
+}
+
+.success-icon {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 20px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 50%;
+
+  color: #15803d;
+  background: #dcfce7;
+
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.success-message h2 {
+  margin: 0 0 10px;
+}
+
+.success-message p {
+  color: #687386;
+  line-height: 1.6;
+}
+
+/* Dashboard */
+
+.dashboard {
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.navbar {
+  height: 72px;
+  padding: 0 32px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  background: white;
+  border-bottom: 1px solid #e7eaf0;
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  font-weight: 800;
+  font-size: 18px;
+}
+
+.logout-button {
+  padding: 9px 16px;
+
+  border: 1px solid #d9dee8;
+  border-radius: 9px;
+
+  background: white;
+  color: #475467;
+
+  font-weight: 600;
+}
+
+.logout-button:hover {
+  background: #f8fafc;
+}
+
+.dashboard-content {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 70px 20px;
+}
+
+.welcome-card {
+  padding: 60px 40px;
+
+  border-radius: 24px;
+  background: white;
+
+  text-align: center;
+
+  box-shadow:
+    0 15px 45px rgba(31, 41, 55, 0.08);
+}
+
+.welcome-card h1 {
+  margin: 0 0 10px;
+  font-size: 34px;
+}
+
+.welcome-card > p {
+  margin: 0;
+  color: #687386;
+}
+
+.user-details {
+  max-width: 500px;
+  margin: 35px auto 0;
+
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+
+  text-align: left;
+}
+
+.user-details div {
+  padding: 18px;
+
+  border: 1px solid #e7eaf0;
+  border-radius: 14px;
+}
+
+.user-details span {
+  display: block;
+  margin-bottom: 6px;
+
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.user-details strong {
+  word-break: break-word;
+}
+
+@media (max-width: 600px) {
+  .auth-card {
+    padding: 28px 22px;
+    border-radius: 18px;
+  }
+
+  .navbar {
+    padding: 0 18px;
+  }
+
+  .dashboard-content {
+    padding-top: 35px;
+  }
+
+  .welcome-card {
+    padding: 40px 20px;
+  }
+
+  .user-details {
+    grid-template-columns: 1fr;
+  }
+}

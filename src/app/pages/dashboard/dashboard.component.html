@@ -1,0 +1,39 @@
+<div class="dashboard">
+  <nav class="navbar">
+    <div class="nav-brand">
+      <div class="brand-icon small">A</div>
+      <span>AuthApp</span>
+    </div>
+
+    <button class="logout-button" (click)="auth.logout()">
+      Log out
+    </button>
+  </nav>
+
+  <main class="dashboard-content">
+    <div class="welcome-card">
+
+      <div class="success-icon">✓</div>
+
+      <h1>You're signed in!</h1>
+
+      <p>
+        Welcome back,
+        <strong>{{ auth.user()?.name }}</strong>.
+      </p>
+
+      <div class="user-details">
+        <div>
+          <span>Name</span>
+          <strong>{{ auth.user()?.name }}</strong>
+        </div>
+
+        <div>
+          <span>Email</span>
+          <strong>{{ auth.user()?.email }}</strong>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>

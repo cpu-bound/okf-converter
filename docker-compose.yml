@@ -1,0 +1,9 @@
+services:
+  angular-auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: angular-auth
+    ports:
+      - "8080:80"
+    restart: unless-stopped

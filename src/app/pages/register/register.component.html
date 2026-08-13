@@ -1,0 +1,109 @@
+<div class="auth-page">
+  <div class="auth-card">
+
+    <div class="brand">
+      <div class="brand-icon">A</div>
+      <h1>Create account</h1>
+      <p>Get started with your new account</p>
+    </div>
+
+    @if (error) {
+      <div class="alert error">
+        {{ error }}
+      </div>
+    }
+
+    <form [formGroup]="registerForm" (ngSubmit)="submit()">
+
+      <div class="form-group">
+        <label for="name">Full name</label>
+
+        <input
+          id="name"
+          type="text"
+          formControlName="name"
+          placeholder="John Doe"
+          autocomplete="name"
+        />
+
+        @if (
+          registerForm.controls.name.touched &&
+          registerForm.controls.name.invalid
+        ) {
+          <small class="field-error">
+            Please enter your name.
+          </small>
+        }
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email</label>
+
+        <input
+          id="email"
+          type="email"
+          formControlName="email"
+          placeholder="you@example.com"
+          autocomplete="email"
+        />
+
+        @if (
+          registerForm.controls.email.touched &&
+          registerForm.controls.email.invalid
+        ) {
+          <small class="field-error">
+            Please enter a valid email address.
+          </small>
+        }
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+
+        <div class="password-wrapper">
+          <input
+            id="password"
+            [type]="showPassword ? 'text' : 'password'"
+            formControlName="password"
+            placeholder="••••••••"
+            autocomplete="new-password"
+          />
+
+          <button
+            type="button"
+            class="password-toggle"
+            (click)="showPassword = !showPassword"
+          >
+            {{ showPassword ? 'Hide' : 'Show' }}
+          </button>
+        </div>
+
+        @if (
+          registerForm.controls.password.touched &&
+          registerForm.controls.password.invalid
+        ) {
+          <small class="field-error">
+            Password must be at least 6 characters.
+          </small>
+        }
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" formControlName="terms" />
+        <span>
+          I agree to the terms and conditions.
+        </span>
+      </label>
+
+      <button class="primary-button" type="submit">
+        Create account
+      </button>
+    </form>
+
+    <p class="signup-text">
+      Already have an account?
+      <a routerLink="/login">Sign in</a>
+    </p>
+
+  </div>
+</div>
