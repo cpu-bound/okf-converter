@@ -1,3 +1,5 @@
+name: okf-converter
+
 services:
 
   frontend:
@@ -5,7 +7,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
 
-    container_name: angular-auth-frontend
+    container_name: okf-converter-frontend
 
     ports:
       - "8080:80"
@@ -22,13 +24,15 @@ services:
       context: ./backend
       dockerfile: Dockerfile
 
-    container_name: angular-auth-api
+    container_name: okf-converter-api
 
     environment:
       NODE_ENV: production
       PORT: 3000
 
       DATABASE_URL: postgresql://auth_user:auth_password@db:5432/auth_db
+
+      RABBITMQ_URL: amqp://okf:okf_password@rabbitmq:5672/
 
       JWT_SECRET: change-this-to-a-long-random-secret
 
@@ -54,13 +58,16 @@ services:
       minio:
         condition: service_started
 
+      rabbitmq:
+        condition: service_healthy
+
     restart: unless-stopped
 
 
   db:
     image: postgres:17-alpine
 
-    container_name: angular-auth-db
+    container_name: okf-converter-db
 
     environment:
       POSTGRES_DB: auth_db
@@ -86,7 +93,7 @@ services:
   minio:
     image: minio/minio:latest
 
-    container_name: angular-auth-minio
+    container_name: okf-converter-minio
 
     command:
       - server
@@ -109,6 +116,94 @@ services:
     restart: unless-stopped
 
 
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+
+    container_name: okf-converter-rabbitmq
+
+    environment:
+      RABBITMQ_DEFAULT_USER: okf
+      RABBITMQ_DEFAULT_PASS: okf_password
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+    healthcheck:
+      test:
+        - CMD
+        - rabbitmq-diagnostics
+        - -q
+        - ping
+
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    restart: unless-stopped
+
+
+  prometheus:
+    image: prom/prometheus:latest
+
+    container_name: okf-converter-prometheus
+
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+    ports:
+      - "9090:9090"
+
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --spider
+        - -q
+        - http://localhost:9090/-/healthy
+
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+    depends_on:
+      api:
+        condition: service_started
+
+    restart: unless-stopped
+
+
+  grafana:
+    image: grafana/grafana-oss:latest
+
+    container_name: okf-converter-grafana
+
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+    ports:
+      - "3001:3000"
+
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+
 volumes:
   postgres_data:
   minio_data:
+  rabbitmq_data:
+  prometheus_data:
+  grafana_data:

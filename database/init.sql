@@ -33,10 +33,29 @@ CREATE TABLE IF NOT EXISTS files (
     size BIGINT NOT NULL,
 
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'ready')),
+        CHECK (status IN ('pending', 'ready', 'converting', 'converted', 'failed')),
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS files_user_id_idx
     ON files(user_id);
+
+CREATE TABLE IF NOT EXISTS file_outputs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    file_id UUID NOT NULL
+        REFERENCES files(id)
+        ON DELETE CASCADE,
+
+    object_key TEXT NOT NULL UNIQUE,
+
+    chunk_index INT NOT NULL,
+
+    size BIGINT NOT NULL,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS file_outputs_file_id_idx
+    ON file_outputs(file_id);

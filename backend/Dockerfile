@@ -1,29 +1,22 @@
-FROM node:22-alpine AS build
+FROM golang:1.26-alpine AS build
 
-WORKDIR /app
+WORKDIR /src
 
-COPY package*.json ./
+COPY go.mod go.sum ./
+RUN go mod download
 
-RUN npm ci
+COPY cmd ./cmd
+COPY internal ./internal
 
-COPY tsconfig.json ./
-COPY src ./src
-
-RUN npm run build
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
 
-FROM node:22-alpine
+FROM gcr.io/distroless/static-debian12
 
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-COPY package*.json ./
-
-RUN npm ci --omit=dev
-
-COPY --from=build /app/dist ./dist
+COPY --from=build /out/api /api
 
 EXPOSE 3000
 
-CMD ["node", "dist/server.js"]
+USER nonroot:nonroot
+
+ENTRYPOINT ["/api"]

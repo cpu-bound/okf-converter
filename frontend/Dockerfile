@@ -16,7 +16,7 @@ FROM nginx:1.29-alpine
 RUN rm -rf /usr/share/nginx/html/*
 
 COPY --from=build \
-    /app/dist/angular-auth/browser \
+    /app/dist/okf-converter/browser \
     /usr/share/nginx/html
 
 COPY nginx.conf \
