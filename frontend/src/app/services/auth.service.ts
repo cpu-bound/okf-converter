@@ -41,12 +41,7 @@ export class AuthService {
 
   loadCurrentUser(): Observable<User | null> {
     return this.http
-      .get<AuthResponse>(
-        '/api/auth/me',
-        {
-          withCredentials: true
-        }
-      )
+      .get<AuthResponse>('/api/auth/me')
       .pipe(
         map(response => response.user),
         tap(user => this.user.set(user)),
@@ -62,16 +57,10 @@ export class AuthService {
     password: string
   ): Observable<User> {
     return this.http
-      .post<AuthResponse>(
-        '/api/auth/login',
-        {
-          email,
-          password
-        },
-        {
-          withCredentials: true
-        }
-      )
+      .post<AuthResponse>('/api/auth/login', {
+        email,
+        password
+      })
       .pipe(
         map(response => response.user),
         tap(user => this.user.set(user))
@@ -84,17 +73,11 @@ export class AuthService {
     password: string
   ): Observable<User> {
     return this.http
-      .post<AuthResponse>(
-        '/api/auth/register',
-        {
-          name,
-          email,
-          password
-        },
-        {
-          withCredentials: true
-        }
-      )
+      .post<AuthResponse>('/api/auth/register', {
+        name,
+        email,
+        password
+      })
       .pipe(
         map(response => response.user),
         tap(user => this.user.set(user))
@@ -103,21 +86,11 @@ export class AuthService {
 
   logout(): void {
     this.http
-      .post(
-        '/api/auth/logout',
-        {},
-        {
-          withCredentials: true
-        }
-      )
+      .post('/api/auth/logout', {})
       .subscribe({
         next: () => this.finishLogout(),
         error: () => this.finishLogout()
       });
-  }
-
-  isAuthenticated(): boolean {
-    return this.user() !== null;
   }
 
   private finishLogout(): void {

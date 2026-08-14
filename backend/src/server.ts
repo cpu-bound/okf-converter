@@ -1,19 +1,20 @@
-import 'dotenv/config';
-
-import express from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 
 import authRouter from './auth';
 import { checkDatabase } from './db';
 
-const app = express();
+import filesRouter from './files';
+import { requireAuth } from './authmiddleware';
+import { initializeStorage } from './storage';
+import { config } from './config';
 
-const PORT = Number(process.env.PORT || 3000);
+const app = express();
 
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:8080',
+    origin: config.frontendUrl,
     credentials: true
   })
 );
@@ -30,6 +31,12 @@ app.get('/api/health', (_req, res) => {
 app.use('/api/auth', authRouter);
 
 app.use(
+  '/api/files',
+  requireAuth,
+  filesRouter
+);
+
+app.use(
   (
     _req,
     res
@@ -40,13 +47,32 @@ app.use(
   }
 );
 
+app.use(
+  (
+    err: unknown,
+    _req: Request,
+    res: Response,
+    // Express only recognizes this as an error handler when it takes
+    // four arguments - _next must stay even though it's unused.
+    _next: NextFunction
+  ) => {
+    console.error('Unhandled error:', err);
+
+    res.status(500).json({
+      message: 'Something went wrong.'
+    });
+  }
+);
+
 async function start(): Promise<void> {
   try {
     await checkDatabase();
 
-    app.listen(PORT, () => {
+    await initializeStorage();
+
+    app.listen(config.port, () => {
       console.log(
-        `API running on http://localhost:${PORT}`
+        `API running on http://localhost:${config.port}`
       );
     });
   } catch (error) {

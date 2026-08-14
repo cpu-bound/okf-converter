@@ -1,8 +1,8 @@
-import 'dotenv/config';
 import { Pool } from 'pg';
+import { config } from './config';
 
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL
+  connectionString: config.databaseUrl
 });
 
 export async function checkDatabase(): Promise<void> {

@@ -7,7 +7,8 @@ import {
 } from '@angular/router';
 
 import {
-  provideHttpClient
+  provideHttpClient,
+  withInterceptors
 } from '@angular/common/http';
 
 import {
@@ -18,12 +19,16 @@ import {
   routes
 } from './app/app.routes';
 
+import {
+  credentialsInterceptor
+} from './app/interceptors/credentials.interceptor';
+
 bootstrapApplication(
   AppComponent,
   {
     providers: [
       provideRouter(routes),
-      provideHttpClient()
+      provideHttpClient(withInterceptors([credentialsInterceptor]))
     ]
   }
 ).catch(console.error);

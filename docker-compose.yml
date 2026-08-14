@@ -28,17 +28,31 @@ services:
       NODE_ENV: production
       PORT: 3000
 
-      DATABASE_URL: >-
-        postgresql://auth_user:auth_password@db:5432/auth_db
+      DATABASE_URL: postgresql://auth_user:auth_password@db:5432/auth_db
 
-      JWT_SECRET: >-
-        change-this-to-a-long-random-production-secret
+      JWT_SECRET: change-this-to-a-long-random-secret
 
       FRONTEND_URL: http://localhost:8080
+
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadminpassword
+      MINIO_BUCKET: user-files
+
+      # Used only for signing presigned URLs, which the browser follows
+      # directly - must be reachable from outside the Docker network.
+      MINIO_PUBLIC_ENDPOINT: localhost
+      MINIO_PUBLIC_PORT: 9000
+      MINIO_PUBLIC_USE_SSL: "false"
 
     depends_on:
       db:
         condition: service_healthy
+
+      minio:
+        condition: service_started
 
     restart: unless-stopped
 
@@ -60,7 +74,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -U auth_user -d auth_db
+        - pg_isready -h 127.0.0.1 -p 5432 -U auth_user -d auth_db
 
       interval: 5s
       timeout: 5s
@@ -69,5 +83,32 @@ services:
     restart: unless-stopped
 
 
+  minio:
+    image: minio/minio:latest
+
+    container_name: angular-auth-minio
+
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+    restart: unless-stopped
+
+
 volumes:
   postgres_data:
+  minio_data:

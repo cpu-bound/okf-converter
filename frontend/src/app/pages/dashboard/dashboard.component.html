@@ -36,4 +36,61 @@
 
     </div>
   </main>
+
+  <div class="upload-section">
+
+  <h2>Your files</h2>
+
+  <p>
+    Upload a file to your private storage.
+  </p>
+
+  <input
+  #fileInput
+  type="file"
+  (change)="onFileSelected($event)"
+  hidden
+/>
+
+<button
+  type="button"
+  class="primary-button"
+  (click)="fileInput.click()"
+>
+  Choose file
+</button>
+
+@if (selectedFile) {
+  <p>
+    Selected:
+    <strong>{{ selectedFile.name }}</strong>
+  </p>
+
+  <button
+    type="button"
+    class="primary-button"
+    [disabled]="uploading"
+    (click)="uploadFile(selectedFile)"
+  >
+    {{ uploading ? 'Uploading...' : 'Upload file' }}
+  </button>
+}
+
+@if (uploading) {
+  <p>Upload progress: {{ uploadProgress }}%</p>
+}
+
+@if (uploadComplete) {
+  <div class="alert success">
+    File uploaded successfully.
+  </div>
+}
+
+@if (uploadError) {
+  <div class="alert error">
+    {{ uploadError }}
+  </div>
+}
+
+</div>
 </div>
