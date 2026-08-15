@@ -1,6 +1,7 @@
 package convert
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -89,13 +90,43 @@ type recordedOutput struct {
 }
 
 type fakeOutputRecorder struct {
-	mu      sync.Mutex
-	created []recordedOutput
+	mu       sync.Mutex
+	created  []recordedOutput
+	clearedN int
 }
 
 func (f *fakeOutputRecorder) Create(ctx context.Context, fileID, objectKey string, chunkIndex int, size int64) error {
 	f.mu.Lock()
 	f.created = append(f.created, recordedOutput{FileID: fileID, ObjectKey: objectKey, ChunkIndex: chunkIndex, Size: size})
+	f.mu.Unlock()
+	return nil
+}
+
+// ClearForFile mimics the real DELETE FROM file_outputs WHERE file_id = $1:
+// it drops every recorded chunk for fileID (regardless of which attempt
+// produced it), so a retried job starts from a clean slate.
+func (f *fakeOutputRecorder) ClearForFile(ctx context.Context, fileID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearedN++
+	kept := f.created[:0]
+	for _, o := range f.created {
+		if o.FileID != fileID {
+			kept = append(kept, o)
+		}
+	}
+	f.created = kept
+	return nil
+}
+
+type fakeJobStatusUpdater struct {
+	mu       sync.Mutex
+	statuses []string
+}
+
+func (f *fakeJobStatusUpdater) UpdateStatus(ctx context.Context, jobID, status string, errMsg *string) error {
+	f.mu.Lock()
+	f.statuses = append(f.statuses, status)
 	f.mu.Unlock()
 	return nil
 }
@@ -106,9 +137,10 @@ func TestSplitConverterProducesOneChunkPerParagraph(t *testing.T) {
 
 	statuses := &fakeStatusUpdater{}
 	outputs := &fakeOutputRecorder{}
-	conv := NewSplitConverter(store, statuses, outputs)
+	jobStatuses := &fakeJobStatusUpdater{}
+	conv := NewSplitConverter(store, statuses, outputs, jobStatuses)
 
-	job := Job{FileID: "file-1", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
+	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
 	if err := conv.Convert(context.Background(), job); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -133,6 +165,60 @@ func TestSplitConverterProducesOneChunkPerParagraph(t *testing.T) {
 	if !equalStrings(statuses.statuses, wantStatuses) {
 		t.Errorf("statuses = %v, want %v", statuses.statuses, wantStatuses)
 	}
+	if !equalStrings(jobStatuses.statuses, wantStatuses) {
+		t.Errorf("job statuses = %v, want %v", jobStatuses.statuses, wantStatuses)
+	}
+
+	resultKey := storage.ResultObjectName(job.ObjectKey)
+	resultBytes, ok := store.objects[resultKey]
+	if !ok {
+		t.Fatalf("result zip %q not stored", resultKey)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(resultBytes), int64(len(resultBytes)))
+	if err != nil {
+		t.Fatalf("result zip is not a valid archive: %v", err)
+	}
+	if len(zr.File) != 3 {
+		t.Fatalf("got %d entries in result zip, want 3", len(zr.File))
+	}
+	if zr.File[0].Name != "chunk-0000.txt" {
+		t.Errorf("first entry name = %q, want %q", zr.File[0].Name, "chunk-0000.txt")
+	}
+}
+
+func TestSplitConverterRetryIsIdempotent(t *testing.T) {
+	store := newFakeObjectStore()
+	store.objects["user-1/src.txt"] = []byte("first paragraph\n\nsecond paragraph\n\nthird paragraph")
+
+	statuses := &fakeStatusUpdater{}
+	outputs := &fakeOutputRecorder{}
+	jobStatuses := &fakeJobStatusUpdater{}
+	conv := NewSplitConverter(store, statuses, outputs, jobStatuses)
+
+	firstAttempt := Job{JobID: "job-1", FileID: "file-1", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
+	if err := conv.Convert(context.Background(), firstAttempt); err != nil {
+		t.Fatalf("first Convert() error = %v", err)
+	}
+
+	// Same FileID/ObjectKey as a retry would use (deterministic keys), just
+	// a different JobID for the new attempt.
+	retryAttempt := Job{JobID: "job-2", FileID: "file-1", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
+	if err := conv.Convert(context.Background(), retryAttempt); err != nil {
+		t.Fatalf("retry Convert() error = %v", err)
+	}
+
+	if outputs.clearedN != 2 {
+		t.Errorf("ClearForFile called %d times, want 2 (once per attempt)", outputs.clearedN)
+	}
+	if len(outputs.created) != 3 {
+		t.Fatalf("got %d output chunks after retry, want 3 (no duplicates left over)", len(outputs.created))
+	}
+
+	resultKey := storage.ResultObjectName(firstAttempt.ObjectKey)
+	if _, ok := store.objects[resultKey]; !ok {
+		t.Fatalf("result zip %q not stored after retry", resultKey)
+	}
 }
 
 func TestSplitConverterCSVOneChunkPerRow(t *testing.T) {
@@ -141,9 +227,10 @@ func TestSplitConverterCSVOneChunkPerRow(t *testing.T) {
 
 	statuses := &fakeStatusUpdater{}
 	outputs := &fakeOutputRecorder{}
-	conv := NewSplitConverter(store, statuses, outputs)
+	jobStatuses := &fakeJobStatusUpdater{}
+	conv := NewSplitConverter(store, statuses, outputs, jobStatuses)
 
-	job := Job{FileID: "file-2", ObjectKey: "user-1/src.csv", ContentType: "text/csv", OriginalName: "data.csv"}
+	job := Job{JobID: "job-2", FileID: "file-2", ObjectKey: "user-1/src.csv", ContentType: "text/csv", OriginalName: "data.csv"}
 	if err := conv.Convert(context.Background(), job); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -159,9 +246,10 @@ func TestSplitConverterUnsupportedFormatMarksFailed(t *testing.T) {
 
 	statuses := &fakeStatusUpdater{}
 	outputs := &fakeOutputRecorder{}
-	conv := NewSplitConverter(store, statuses, outputs)
+	jobStatuses := &fakeJobStatusUpdater{}
+	conv := NewSplitConverter(store, statuses, outputs, jobStatuses)
 
-	job := Job{FileID: "file-3", ObjectKey: "user-1/src.zip", ContentType: "application/zip", OriginalName: "archive.zip"}
+	job := Job{JobID: "job-3", FileID: "file-3", ObjectKey: "user-1/src.zip", ContentType: "application/zip", OriginalName: "archive.zip"}
 	if err := conv.Convert(context.Background(), job); err == nil {
 		t.Fatal("expected error for unsupported format, got nil")
 	}
@@ -182,9 +270,10 @@ func TestSplitConverterDownloadFailureMarksFailed(t *testing.T) {
 
 	statuses := &fakeStatusUpdater{}
 	outputs := &fakeOutputRecorder{}
-	conv := NewSplitConverter(store, statuses, outputs)
+	jobStatuses := &fakeJobStatusUpdater{}
+	conv := NewSplitConverter(store, statuses, outputs, jobStatuses)
 
-	job := Job{FileID: "file-4", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
+	job := Job{JobID: "job-4", FileID: "file-4", ObjectKey: "user-1/src.txt", ContentType: "text/plain", OriginalName: "notes.txt"}
 	if err := conv.Convert(context.Background(), job); err == nil {
 		t.Fatal("expected error when download fails, got nil")
 	}

@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import {
   FormBuilder,
   ReactiveFormsModule,
@@ -15,7 +15,7 @@ import { RouterLink } from '@angular/router';
 export class ForgotPasswordComponent {
   private fb = inject(FormBuilder);
 
-  submitted = false;
+  submitted = signal(false);
 
   form = this.fb.nonNullable.group({
     email: ['', [Validators.required, Validators.email]]
@@ -27,6 +27,6 @@ export class ForgotPasswordComponent {
       return;
     }
 
-    this.submitted = true;
+    this.submitted.set(true);
   }
 }

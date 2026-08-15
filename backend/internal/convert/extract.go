@@ -5,14 +5,25 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
 )
 
 // blankLineRE splits text into paragraphs on one or more blank lines.
 var blankLineRE = regexp.MustCompile(`\r?\n[ \t]*\r?\n+`)
+
+// maxParagraphBytes caps how large a single blank-line-delimited block is
+// allowed to become before splitParagraphs slices it further. Some PDF
+// extractions (dense, two-column academic layouts especially) emit almost
+// no blank lines at all, which would otherwise collapse the entire
+// document into one enormous "paragraph" - this fallback keeps chunk sizes
+// (and therefore chunk counts, for very large documents) reasonable even
+// when the source gives splitParagraphs nothing useful to split on.
+const maxParagraphBytes = 20_000
 
 type sourceFormat int
 
@@ -81,9 +92,38 @@ func splitParagraphs(s string) []string {
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
+		if p == "" {
+			continue
 		}
+		out = append(out, splitOversizedBlock(p)...)
+	}
+	return out
+}
+
+// splitOversizedBlock breaks s into maxParagraphBytes-sized pieces (without
+// cutting a multi-byte UTF-8 rune in half) if it's larger than that,
+// otherwise returns it unchanged as a single-element slice.
+func splitOversizedBlock(s string) []string {
+	if len(s) <= maxParagraphBytes {
+		return []string{s}
+	}
+
+	var out []string
+	for len(s) > maxParagraphBytes {
+		cut := maxParagraphBytes
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		if cut == 0 {
+			// No rune boundary found in range (pathological input) - cut
+			// at the byte limit anyway rather than looping forever.
+			cut = maxParagraphBytes
+		}
+		out = append(out, s[:cut])
+		s = s[cut:]
+	}
+	if len(s) > 0 {
+		out = append(out, s)
 	}
 	return out
 }
@@ -113,9 +153,11 @@ func extractCSV(r io.Reader) ([]string, error) {
 }
 
 // extractPDF reads the whole file into memory (pdf.NewReader needs an
-// io.ReaderAt) and pulls the document's plain text, then splits it the same
-// way as a text file. Uploads are already capped at 25MB, so buffering the
-// whole thing is fine.
+// io.ReaderAt) and pulls the document's text page by page, then splits it
+// the same way as a text file. This scales with files.MaxFileSize: the
+// worker holds the source bytes, the extracted text, and (in split.go) the
+// result zip in memory at once, so a large upload means real peak RAM in
+// this container.
 func extractPDF(r io.Reader) ([]string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
@@ -127,15 +169,65 @@ func extractPDF(r io.Reader) ([]string, error) {
 		return nil, fmt.Errorf("open pdf: %w", err)
 	}
 
-	textReader, err := doc.GetPlainText()
-	if err != nil {
-		return nil, fmt.Errorf("extract pdf text: %w", err)
+	var buf strings.Builder
+	for i := 1; i <= doc.NumPage(); i++ {
+		writePageText(&buf, doc.Page(i).Content().Text)
 	}
 
-	text, err := io.ReadAll(textReader)
-	if err != nil {
-		return nil, fmt.Errorf("read pdf text: %w", err)
+	return splitParagraphs(buf.String()), nil
+}
+
+// writePageText reconstructs readable text from chars, the page's
+// per-character positions (as produced by Page.Content()).
+//
+// The pdf package's own Page.GetPlainText/Reader.GetPlainText just
+// concatenate each Tj/TJ operator's decoded string with no regard for
+// layout: PDFs commonly render justified or kerned text as a sequence of
+// glyph runs positioned purely by numeric offsets, with no literal space
+// character between words, which GetPlainText has no way to recover -
+// the result is words glued together ("wordslikethis"). Since Content()
+// gives each character's X/Y position, font size, and width, we can
+// instead infer a word-space or line break from the geometric gap to the
+// next character, the same technique real PDF text extractors (poppler,
+// pdfminer, ...) use.
+//
+// Deliberately not attempted: guessing paragraph breaks (a blank line)
+// from vertical gaps between lines. It sounds appealing, but footnote
+// markers and other small-caps/superscript runs sit at a different
+// baseline than the body text around them, which made a Y-gap heuristic
+// fire constantly on ordinary inline text - it doesn't reliably
+// distinguish "new paragraph" from "this line has a footnote marker in
+// it," and on a real academic PDF that turned ~2,600 reasonable chunks
+// into ~7,000 tiny ones (many just a stray 1-byte marker). Only a
+// genuine page boundary is treated as a paragraph break; everything
+// within a page beyond that relies on splitOversizedBlock (see
+// splitParagraphs) to keep chunks a reasonable size.
+func writePageText(buf *strings.Builder, chars []pdf.Text) {
+	var prev pdf.Text
+	havePrev := false
+
+	for _, c := range chars {
+		if c.S == "" {
+			continue
+		}
+
+		if havePrev {
+			threshold := math.Max(prev.FontSize, c.FontSize)
+			if math.Abs(c.Y-prev.Y) < threshold*0.5 {
+				// Same baseline. A horizontal gap wider than a small
+				// kerning adjustment is a real word boundary.
+				if c.X-(prev.X+prev.W) > prev.FontSize*0.2 {
+					buf.WriteByte(' ')
+				}
+			} else {
+				buf.WriteByte('\n')
+			}
+		}
+
+		buf.WriteString(c.S)
+		prev = c
+		havePrev = true
 	}
 
-	return splitParagraphs(string(text)), nil
+	buf.WriteString("\n\n")
 }

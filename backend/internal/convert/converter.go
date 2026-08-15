@@ -7,6 +7,10 @@ package convert
 import "context"
 
 type Job struct {
+	// JobID identifies this conversion attempt (see files.JobRepository),
+	// distinct from FileID which identifies the uploaded file across all of
+	// its attempts.
+	JobID        string
 	FileID       string
 	ObjectKey    string
 	ContentType  string

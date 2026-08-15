@@ -546,3 +546,116 @@ input::placeholder {
   color: #166534;
   background: #dcfce7;
 }
+
+.selected-file {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+
+  margin: 20px 0;
+  padding: 14px 16px;
+
+  border-radius: 10px;
+  background: #f5f7fb;
+
+  font-size: 14px;
+}
+
+.selected-file span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-weight: 600;
+}
+
+.selected-file span:last-child {
+  flex-shrink: 0;
+  color: #98a2b3;
+  font-size: 13px;
+}
+
+.progress-label {
+  margin: 0;
+  color: #687386;
+  font-size: 13px;
+  text-align: right;
+}
+
+.result-panel {
+  margin-top: 16px;
+}
+
+.result-panel-label {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.result-url {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  margin-bottom: 14px;
+}
+
+.result-url-input {
+  flex: 1;
+  min-width: 0;
+
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  color: #475467;
+  background: #f8fafc;
+
+  text-overflow: ellipsis;
+}
+
+.copy-button {
+  flex-shrink: 0;
+  height: 50px;
+  padding: 0 18px;
+
+  border: 1px solid #d9dee8;
+  border-radius: 12px;
+
+  background: white;
+  color: #635bff;
+
+  font-size: 14px;
+  font-weight: 700;
+
+  transition: background 0.15s;
+}
+
+.copy-button:hover {
+  background: #f5f7fb;
+}
+
+.retry-link {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px;
+
+  border: 0;
+  background: transparent;
+
+  color: #687386;
+  font-size: 13px;
+  text-align: center;
+  text-decoration: underline;
+}
+
+.retry-link:hover {
+  color: #635bff;
+}
+
+.retry-link:disabled {
+  color: #a3abb8;
+  cursor: default;
+  text-decoration: none;
+}

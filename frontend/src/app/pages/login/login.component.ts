@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import {
   FormBuilder,
   ReactiveFormsModule,
@@ -18,16 +18,25 @@ export class LoginComponent {
   private auth = inject(AuthService);
   private router = inject(Router);
 
-  showPassword = false;
-  error = '';
+  // Signals, not plain fields: error/submitting are set from inside the
+  // login() .subscribe() callback, which runs outside any template-bound
+  // event - under zoneless change detection a plain field write there
+  // would sit unrendered until some unrelated click triggered a check.
+  showPassword = signal(false);
+  submitting = signal(false);
+  error = signal('');
 
   loginForm = this.fb.nonNullable.group({
     email: ['', [Validators.required, Validators.email]],
     password: ['', [Validators.required, Validators.minLength(8)]]
   });
 
+  togglePasswordVisibility(): void {
+    this.showPassword.update(shown => !shown);
+  }
+
   submit(): void {
-    this.error = '';
+    this.error.set('');
 
     if (this.loginForm.invalid) {
       this.loginForm.markAllAsTouched();
@@ -39,6 +48,8 @@ export class LoginComponent {
       password
     } = this.loginForm.getRawValue();
 
+    this.submitting.set(true);
+
     this.auth
       .login(email, password)
       .subscribe({
@@ -47,9 +58,11 @@ export class LoginComponent {
         },
 
         error: error => {
-          this.error =
+          this.submitting.set(false);
+          this.error.set(
             error?.error?.message ||
-            'Unable to sign in.';
+            'Unable to sign in.'
+          );
         }
       });
   }

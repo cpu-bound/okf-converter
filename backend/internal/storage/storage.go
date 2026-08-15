@@ -172,3 +172,16 @@ func CreateObjectName(userID, originalName string) string {
 	}
 	return fmt.Sprintf("%s/%s.%s", userID, id, ext)
 }
+
+// ResultObjectName derives the deterministic key for a source object's
+// bundled result zip, e.g. "<userID>/<uuid>.<ext>" -> "<userID>/<uuid>-result.zip".
+// Being a pure function of objectKey (rather than a stored value) lets both
+// the handler that presigns the download URL and the worker that writes the
+// zip agree on the key without any coordination.
+func ResultObjectName(objectKey string) string {
+	base := objectKey
+	if idx := strings.LastIndex(objectKey, "."); idx != -1 {
+		base = objectKey[:idx]
+	}
+	return base + "-result.zip"
+}

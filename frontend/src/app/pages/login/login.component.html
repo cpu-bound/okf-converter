@@ -7,9 +7,9 @@
       <p>Sign in to your account</p>
     </div>
 
-    @if (error) {
+    @if (error()) {
       <div class="alert error">
-        {{ error }}
+        {{ error() }}
       </div>
     }
 
@@ -45,7 +45,7 @@
         <div class="password-wrapper">
           <input
             id="password"
-            [type]="showPassword ? 'text' : 'password'"
+            [type]="showPassword() ? 'text' : 'password'"
             formControlName="password"
             placeholder="••••••••"
             autocomplete="current-password"
@@ -54,10 +54,10 @@
           <button
             type="button"
             class="password-toggle"
-            (click)="showPassword = !showPassword"
-            [attr.aria-label]="showPassword ? 'Hide password' : 'Show password'"
+            (click)="togglePasswordVisibility()"
+            [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'"
           >
-            {{ showPassword ? 'Hide' : 'Show' }}
+            {{ showPassword() ? 'Hide' : 'Show' }}
           </button>
         </div>
 
@@ -71,8 +71,8 @@
         }
       </div>
 
-      <button class="primary-button" type="submit">
-        Sign in
+      <button class="primary-button" type="submit" [disabled]="submitting()">
+        {{ submitting() ? 'Signing in...' : 'Sign in' }}
       </button>
     </form>
 

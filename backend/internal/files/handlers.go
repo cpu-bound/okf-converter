@@ -13,24 +13,32 @@ import (
 )
 
 const (
-	MaxFileSize        = 25 * 1024 * 1024
+	MaxFileSize        = 500 * 1024 * 1024
 	presignedURLExpiry = 15 * time.Minute
+	// resultURLExpiry is long-lived relative to presignedURLExpiry because
+	// this URL is handed back before conversion even starts - the caller
+	// may not check back for a while, and (unlike the upload PUT) it must
+	// still be valid whenever they do.
+	resultURLExpiry = 24 * time.Hour
 )
 
-// OnConfirmed, if set, is called after a file is successfully marked ready -
-// the seam the conversion pipeline hooks into (wired in main.go). Kept as a
-// plain func field rather than a required constructor arg so this package
-// has no compile-time dependency on internal/convert.
+// EnqueueConversion, if set, is called to push a conversion job for a file -
+// on first upload confirmation (retryOf nil) and on retry (retryOf pointing
+// at the job attempt being retried). It's the seam the conversion pipeline
+// hooks into (wired in main.go). Kept as a plain func field rather than a
+// required constructor arg so this package has no compile-time dependency
+// on internal/convert.
 type Handlers struct {
 	repo    FileRepository
 	outputs OutputRepository
+	jobs    JobRepository
 	storage storage.Storage
 
-	OnConfirmed func(ctx context.Context, file File, objectKey string)
+	EnqueueConversion func(ctx context.Context, file File, objectKey string, retryOf *string)
 }
 
-func NewHandlers(repo FileRepository, outputs OutputRepository, store storage.Storage) *Handlers {
-	return &Handlers{repo: repo, outputs: outputs, storage: store}
+func NewHandlers(repo FileRepository, outputs OutputRepository, jobs JobRepository, store storage.Storage) *Handlers {
+	return &Handlers{repo: repo, outputs: outputs, jobs: jobs, storage: store}
 }
 
 func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
@@ -54,7 +62,7 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 
 	size := *body.Size
 	if size <= 0 || size > MaxFileSize {
-		httpx.Error(w, http.StatusBadRequest, "File must be between 1 byte and 25 MB.")
+		httpx.Error(w, http.StatusBadRequest, "File must be between 1 byte and 500 MB.")
 		return
 	}
 
@@ -118,11 +126,103 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.OnConfirmed != nil {
-		h.OnConfirmed(ctx, file, record.ObjectKey)
+	// Presigning is a pure signature over bucket/key/expiry - it doesn't
+	// require the object to exist, so the result URL can be handed back
+	// now even though conversion hasn't run yet. It simply 404s from MinIO
+	// until the worker writes storage.ResultObjectName(record.ObjectKey).
+	resultURL, err := h.storage.PresignedGetURL(ctx, storage.ResultObjectName(record.ObjectKey), resultURLExpiry)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]File{"file": file})
+	if h.EnqueueConversion != nil {
+		h.EnqueueConversion(ctx, file, record.ObjectKey, nil)
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{"file": file, "resultUrl": resultURL})
+}
+
+// Status returns a file's current state, so the frontend can poll for
+// conversion progress without depending on any server-side session or
+// connection - a plain, stateless, per-request read.
+func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		return
+	}
+
+	fileID := r.PathValue("id")
+	ctx := r.Context()
+
+	record, err := h.repo.FindForUser(ctx, fileID, user.ID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httpx.Error(w, http.StatusNotFound, "File not found.")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]File{"file": record.File()})
+}
+
+// Retry re-enqueues a conversion job for a file whose previous attempt
+// failed. It's idempotent by design rather than by erroring: whether this
+// particular call is the one that wins the failed->converting transition
+// or not, it always responds with the file's current state and a fresh
+// result URL, so a duplicate/concurrent retry call never double-enqueues
+// and is always safe to repeat.
+func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		return
+	}
+
+	fileID := r.PathValue("id")
+	ctx := r.Context()
+
+	record, err := h.repo.FindForUser(ctx, fileID, user.ID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httpx.Error(w, http.StatusNotFound, "File not found.")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	file, won, err := h.repo.MarkRetrying(ctx, record.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	if won {
+		var retryOf *string
+		prevJob, err := h.jobs.LatestForFile(ctx, record.ID)
+		if err == nil {
+			retryOf = &prevJob.ID
+		} else if !errors.Is(err, ErrNoJobs) {
+			httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+			return
+		}
+
+		if h.EnqueueConversion != nil {
+			h.EnqueueConversion(ctx, file, record.ObjectKey, retryOf)
+		}
+	}
+
+	resultURL, err := h.storage.PresignedGetURL(ctx, storage.ResultObjectName(record.ObjectKey), resultURLExpiry)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]any{"file": file, "resultUrl": resultURL})
 }
 
 // Outputs lists the converted chunk files produced for a source file, each

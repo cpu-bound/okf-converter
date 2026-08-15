@@ -61,8 +61,9 @@ func run() error {
 
 	fileRepo := files.NewPgFileRepository(dbPool)
 	outputRepo := files.NewPgOutputRepository(dbPool)
+	jobRepo := files.NewPgJobRepository(dbPool)
 
-	convertQueue, err := convert.NewRabbitQueue(rabbitConn, convert.NewSplitConverter(store, fileRepo, outputRepo), convertWorkers)
+	convertQueue, err := convert.NewRabbitQueue(rabbitConn, convert.NewSplitConverter(store, fileRepo, outputRepo, jobRepo), convertWorkers)
 	if err != nil {
 		return err
 	}
@@ -74,9 +75,15 @@ func run() error {
 
 	authHandlers := auth.NewHandlers(auth.NewPgUserRepository(dbPool), cfg.JWTSecret, cfg.IsProduction())
 
-	fileHandlers := files.NewHandlers(fileRepo, outputRepo, store)
-	fileHandlers.OnConfirmed = func(ctx context.Context, file files.File, objectKey string) {
-		job := convert.Job{FileID: file.ID, ObjectKey: objectKey, ContentType: file.ContentType, OriginalName: file.OriginalName}
+	fileHandlers := files.NewHandlers(fileRepo, outputRepo, jobRepo, store)
+	fileHandlers.EnqueueConversion = func(ctx context.Context, file files.File, objectKey string, retryOf *string) {
+		convertJob, err := jobRepo.Create(ctx, file.ID, retryOf)
+		if err != nil {
+			log.Printf("failed to record conversion job for file %s: %v", file.ID, err)
+			return
+		}
+
+		job := convert.Job{JobID: convertJob.ID, FileID: file.ID, ObjectKey: objectKey, ContentType: file.ContentType, OriginalName: file.OriginalName}
 		if err := convertQueue.Enqueue(ctx, job); err != nil {
 			log.Printf("failed to enqueue convert job for file %s: %v", file.ID, err)
 		}
@@ -95,6 +102,8 @@ func run() error {
 
 	mux.Handle("POST /api/files/upload-url", requireAuth(http.HandlerFunc(fileHandlers.UploadURL)))
 	mux.Handle("POST /api/files/{id}/confirm", requireAuth(http.HandlerFunc(fileHandlers.Confirm)))
+	mux.Handle("GET /api/files/{id}", requireAuth(http.HandlerFunc(fileHandlers.Status)))
+	mux.Handle("POST /api/files/{id}/retry", requireAuth(http.HandlerFunc(fileHandlers.Retry)))
 	mux.Handle("GET /api/files/{id}/outputs", requireAuth(http.HandlerFunc(fileHandlers.Outputs)))
 
 	handler := middleware.Recover(httpx.CORS(cfg.FrontendURL, mux))

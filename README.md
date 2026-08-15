@@ -1,59 +1,98 @@
-# AngularAuth
+# OKF Converter
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 21.2.21.
+OKF Converter es una aplicación web para convertir documentos subidos en
+fragmentos de texto plano. Un usuario se autentica, sube un archivo, y el
+backend extrae su texto y lo divide en salidas `.txt` por párrafo que se
+pueden descargar individualmente.
 
-## Development server
+## Arquitectura
 
-To start a local development server, run:
+| Servicio     | Tecnología                         | Propósito                                     |
+| ------------ | ----------------------------------- | ----------------------------------------------- |
+| `frontend`   | Angular 21, servido con Nginx       | Páginas de autenticación + dashboard            |
+| `api`        | Go                                   | API REST, autenticación, pipeline de conversión |
+| `db`         | PostgreSQL 17                       | Usuarios, archivos, salidas                     |
+| `minio`      | MinIO                               | Almacenamiento de archivos subidos y salidas    |
+| `rabbitmq`   | RabbitMQ                            | Cola de trabajos de conversión                  |
+| `prometheus` | Prometheus                          | Recolección de métricas (`/metrics` en `api`)   |
+| `grafana`    | Grafana                             | Dashboards sobre las métricas de Prometheus     |
 
-```bash
-ng serve
-```
+Flujo de subida: el frontend pide al API una URL prefirmada de subida, sube
+el archivo directamente a MinIO, y luego confirma la subida. El API encola
+un trabajo de conversión en RabbitMQ; un pool de workers dentro del proceso
+`api` extrae el texto del documento (`backend/internal/convert/extract.go`)
+y lo divide en fragmentos por párrafo, guardando cada uno como un objeto
+`.txt` en MinIO (`backend/internal/convert/split.go`).
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+## Ejecutar la aplicación
 
-## Code scaffolding
-
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
-
-```bash
-ng generate component component-name
-```
-
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
-
-```bash
-ng generate --help
-```
-
-## Building
-
-To build the project run:
+Requiere Docker y Docker Compose.
 
 ```bash
-ng build
+docker compose up --build
 ```
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
+Una vez en ejecución:
 
-## Running unit tests
+- App: http://localhost:8080 (crear una cuenta y luego iniciar sesión para acceder a `/dashboard`)
+- API: http://localhost:3000
+- Consola de MinIO: http://localhost:9001 (`minioadmin` / `minioadminpassword`)
+- Panel de administración de RabbitMQ: http://localhost:15672 (`okf` / `okf_password`)
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3001 (`admin` / `admin`)
 
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
+`docker-compose.yml` define credenciales y secretos por defecto solo para
+desarrollo local — cambiar `JWT_SECRET` y las demás contraseñas antes de
+desplegar en un entorno real.
+
+## Estructura del proyecto
+
+```
+backend/         API en Go (autenticación, archivos, pipeline de conversión)
+  cmd/api/        Punto de entrada
+  internal/
+    auth/          Registro, login, JWT, hashing de contraseñas
+    convert/        Consumidor de la cola, extracción de texto, división en párrafos
+    files/          Handlers de subida/confirmación/salidas
+    storage/        Wrapper del cliente de MinIO
+    middleware/      Guard de autenticación, recuperación de panics
+    metrics/         Métricas de Prometheus
+frontend/        App de Angular (login/registro/dashboard)
+database/        SQL de inicialización de Postgres
+observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
+```
+
+## Desarrollo del backend
+
+El API es un módulo estándar de Go en `backend/`.
 
 ```bash
-ng test
+cd backend
+go build ./...
+go test ./...
 ```
 
-## Running end-to-end tests
+Para ejecutarlo fuera de Docker se necesita tener Postgres, MinIO y RabbitMQ
+accesibles, además de las variables de entorno definidas en
+`docker-compose.yml` (`DATABASE_URL`, `RABBITMQ_URL`, `JWT_SECRET`,
+`MINIO_*`, etc. — ver `backend/internal/config/config.go` para la lista
+completa y sus valores por defecto).
 
-For end-to-end (e2e) testing, run:
+## Desarrollo del frontend
 
 ```bash
-ng e2e
+cd frontend
+npm install
+npm start        # ng serve, http://localhost:4200
 ```
 
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
+Las pruebas unitarias usan [Vitest](https://vitest.dev/):
 
-## Additional Resources
+```bash
+npm test
+```
 
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+El servidor de desarrollo redirige las llamadas al API hacia el origen que
+esté configurado en el entorno; para desarrollar contra el stack completo,
+levantar el backend y sus dependencias con
+`docker compose up db minio rabbitmq api`.

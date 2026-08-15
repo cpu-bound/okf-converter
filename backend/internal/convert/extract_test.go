@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestDetectFormat(t *testing.T) {
@@ -36,6 +37,48 @@ func TestSplitParagraphs(t *testing.T) {
 	got := splitParagraphs(input)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("splitParagraphs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestSplitParagraphsFallsBackToFixedSizeChunksForOversizedBlocks(t *testing.T) {
+	// A single block with no blank lines at all - like the near-space-less,
+	// near-paragraph-break-less output some PDF extractions produce - well
+	// over the maxParagraphBytes fallback threshold.
+	block := strings.Repeat("a", maxParagraphBytes*2+500)
+
+	got := splitParagraphs(block)
+
+	if len(got) != 3 {
+		t.Fatalf("got %d chunks, want 3 (two full-size plus a remainder)", len(got))
+	}
+
+	for i, want := range []int{maxParagraphBytes, maxParagraphBytes, 500} {
+		if len(got[i]) != want {
+			t.Errorf("chunk %d length = %d, want %d", i, len(got[i]), want)
+		}
+	}
+
+	rejoined := strings.Join(got, "")
+	if rejoined != block {
+		t.Error("splitParagraphs() lost or reordered content when splitting an oversized block")
+	}
+}
+
+func TestSplitOversizedBlockPreservesUTF8Boundaries(t *testing.T) {
+	// A multi-byte rune ("é", 2 bytes in UTF-8) placed to straddle the cut
+	// point, so a naive byte-count split would slice it in half.
+	s := strings.Repeat("a", maxParagraphBytes-1) + "é" + strings.Repeat("b", 100)
+
+	got := splitOversizedBlock(s)
+
+	for i, chunk := range got {
+		if !utf8.ValidString(chunk) {
+			t.Errorf("chunk %d is not valid UTF-8: %q", i, chunk)
+		}
+	}
+
+	if strings.Join(got, "") != s {
+		t.Error("splitOversizedBlock() lost or reordered content")
 	}
 }
 

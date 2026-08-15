@@ -55,40 +55,79 @@
 <button
   type="button"
   class="primary-button"
+  [disabled]="uploading()"
   (click)="fileInput.click()"
 >
   Choose file
 </button>
 
-@if (selectedFile) {
-  <p>
-    Selected:
-    <strong>{{ selectedFile.name }}</strong>
-  </p>
+@if (selectedFile(); as file) {
+  <div class="selected-file">
+    <span>{{ file.name }}</span>
+    <span>{{ formatFileSize(file.size) }}</span>
+  </div>
 
   <button
     type="button"
     class="primary-button"
-    [disabled]="uploading"
-    (click)="uploadFile(selectedFile)"
+    [disabled]="uploading()"
+    (click)="uploadFile(file)"
   >
-    {{ uploading ? 'Uploading...' : 'Upload file' }}
+    {{ uploading() ? 'Uploading...' : 'Upload file' }}
   </button>
 }
 
-@if (uploading) {
-  <p>Upload progress: {{ uploadProgress }}%</p>
+@if (uploading()) {
+  <div class="progress-container">
+    <div class="progress-bar" [style.width.%]="uploadProgress()"></div>
+  </div>
+  <p class="progress-label">{{ uploadProgress() }}%</p>
 }
 
-@if (uploadComplete) {
+@if (uploadComplete()) {
   <div class="alert success">
     File uploaded successfully.
   </div>
 }
 
-@if (uploadError) {
+@if (uploadError()) {
   <div class="alert error">
-    {{ uploadError }}
+    {{ uploadError() }}
+  </div>
+}
+
+@if (resultUrl(); as url) {
+  <div class="result-panel">
+    <p class="result-panel-label">
+      Once ready, you can download the result with this link:
+    </p>
+
+    <div class="result-url">
+      <input
+        type="text"
+        class="result-url-input"
+        [value]="url"
+        readonly
+        (click)="selectUrlInput($event)"
+      />
+
+      <button type="button" class="copy-button" (click)="copyResultUrl()">
+        {{ copied() ? 'Copied!' : 'Copy' }}
+      </button>
+    </div>
+
+    <a class="primary-button" [href]="url" target="_blank" rel="noopener noreferrer">
+      Download results
+    </a>
+
+    <button
+      type="button"
+      class="retry-link"
+      [disabled]="retrying()"
+      (click)="retryConversion()"
+    >
+      {{ retrying() ? 'Retrying...' : "Link not working yet? Retry conversion" }}
+    </button>
   </div>
 }
 

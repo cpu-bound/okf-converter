@@ -21,19 +21,38 @@ type File struct {
 	Status       string `json:"status"`
 }
 
-// FileRecord carries the fields the confirm flow needs internally
-// (object_key, declared size) that aren't part of the public File shape.
+// FileRecord carries the fields the confirm/retry/outputs flows need
+// internally (object_key, declared size) alongside the public File fields.
 type FileRecord struct {
-	ID        string
-	ObjectKey string
-	Size      int64
-	Status    string
+	ID           string
+	ObjectKey    string
+	OriginalName string
+	ContentType  string
+	Size         int64
+	Status       string
+}
+
+// File returns the public shape of rec, for handlers (like Status) that
+// only need the fields exposed to the frontend.
+func (rec FileRecord) File() File {
+	return File{
+		ID:           rec.ID,
+		OriginalName: rec.OriginalName,
+		ContentType:  rec.ContentType,
+		Size:         rec.Size,
+		Status:       rec.Status,
+	}
 }
 
 type FileRepository interface {
 	Create(ctx context.Context, userID, objectKey, originalName, contentType string, size int64) (File, error)
 	FindForUser(ctx context.Context, id, userID string) (FileRecord, error)
 	MarkReady(ctx context.Context, id string) (File, error)
+	// MarkRetrying atomically transitions a file from 'failed' to
+	// 'converting', so concurrent/duplicate retry requests only let one
+	// caller actually claim the retry. It always returns the file's
+	// current state; won reports whether this call made the transition.
+	MarkRetrying(ctx context.Context, id string) (file File, won bool, err error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -67,9 +86,9 @@ func (r *PgFileRepository) FindForUser(ctx context.Context, id, userID string) (
 	var rec FileRecord
 
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, object_key, size, status FROM files WHERE id = $1 AND user_id = $2`,
+		`SELECT id, object_key, original_name, content_type, size, status FROM files WHERE id = $1 AND user_id = $2`,
 		id, userID,
-	).Scan(&rec.ID, &rec.ObjectKey, &rec.Size, &rec.Status)
+	).Scan(&rec.ID, &rec.ObjectKey, &rec.OriginalName, &rec.ContentType, &rec.Size, &rec.Status)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return FileRecord{}, ErrNotFound
@@ -78,6 +97,39 @@ func (r *PgFileRepository) FindForUser(ctx context.Context, id, userID string) (
 	}
 
 	return rec, nil
+}
+
+// MarkRetrying is the CAS guard behind Handlers.Retry: only a request that
+// finds the file still in 'failed' actually transitions it (and is told
+// won=true), so a duplicate/concurrent retry call is always safe to make -
+// it just observes the state the winning call already produced.
+func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, bool, error) {
+	var f File
+
+	err := r.pool.QueryRow(ctx,
+		`
+		UPDATE files SET status = 'converting'
+		WHERE id = $1 AND status = 'failed'
+		RETURNING id, original_name, content_type, size, status
+		`,
+		id,
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	if err == nil {
+		return f, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return File{}, false, fmt.Errorf("mark retrying: %w", err)
+	}
+
+	err = r.pool.QueryRow(ctx,
+		`SELECT id, original_name, content_type, size, status FROM files WHERE id = $1`,
+		id,
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	if err != nil {
+		return File{}, false, fmt.Errorf("find file: %w", err)
+	}
+
+	return f, false, nil
 }
 
 func (r *PgFileRepository) MarkReady(ctx context.Context, id string) (File, error) {

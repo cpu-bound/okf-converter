@@ -28,6 +28,11 @@ type OutputRecord struct {
 type OutputRepository interface {
 	Create(ctx context.Context, fileID, objectKey string, chunkIndex int, size int64) error
 	ListForFile(ctx context.Context, fileID string) ([]OutputRecord, error)
+	// ClearForFile deletes all output rows for fileID. Called at the start
+	// of a (re)conversion attempt so a retry never collides with rows left
+	// over from a previous attempt, and GET .../outputs always reflects
+	// only the most recent attempt.
+	ClearForFile(ctx context.Context, fileID string) error
 }
 
 type PgOutputRepository struct {
@@ -72,4 +77,11 @@ func (r *PgOutputRepository) ListForFile(ctx context.Context, fileID string) ([]
 	}
 
 	return out, nil
+}
+
+func (r *PgOutputRepository) ClearForFile(ctx context.Context, fileID string) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM file_outputs WHERE file_id = $1`, fileID); err != nil {
+		return fmt.Errorf("clear file outputs: %w", err)
+	}
+	return nil
 }

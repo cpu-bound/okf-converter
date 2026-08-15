@@ -59,3 +59,26 @@ CREATE TABLE IF NOT EXISTS file_outputs (
 
 CREATE INDEX IF NOT EXISTS file_outputs_file_id_idx
     ON file_outputs(file_id);
+
+CREATE TABLE IF NOT EXISTS conversion_jobs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    file_id UUID NOT NULL
+        REFERENCES files(id)
+        ON DELETE CASCADE,
+
+    retry_of UUID
+        REFERENCES conversion_jobs(id),
+
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'converting', 'converted', 'failed')),
+
+    error TEXT,
+
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS conversion_jobs_file_id_idx
+    ON conversion_jobs(file_id);
