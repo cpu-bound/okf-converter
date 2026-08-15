@@ -68,7 +68,7 @@ export class RegisterComponent {
           this.submitting.set(false);
           this.error.set(
             error?.error?.message ||
-            'Unable to create account.'
+            'No se pudo crear la cuenta.'
           );
         }
       });

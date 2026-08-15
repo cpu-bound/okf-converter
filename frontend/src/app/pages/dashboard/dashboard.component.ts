@@ -142,7 +142,7 @@ export class DashboardComponent implements OnDestroy {
           console.error('Upload failed:', error);
           this.uploading.set(false);
           this.uploadError.set(
-            'Upload failed. Please try again.'
+            'Error al subir el archivo. Inténtalo de nuevo.'
           );
         }
       });

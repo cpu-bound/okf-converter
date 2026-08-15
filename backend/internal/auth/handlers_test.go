@@ -55,6 +55,14 @@ func (f *fakeUserRepository) FindByID(ctx context.Context, id string) (User, err
 	return user, nil
 }
 
+func (f *fakeUserRepository) UpdatePasswordByEmail(ctx context.Context, email, passwordHash string) error {
+	if _, ok := f.byEmail[email]; !ok {
+		return ErrNotFound
+	}
+	f.hashes[email] = passwordHash
+	return nil
+}
+
 func TestRegisterHandler(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -182,6 +190,85 @@ func TestMeHandler(t *testing.T) {
 			t.Errorf("user.ID = %q, want %q", resp.User.ID, "user-1")
 		}
 	})
+}
+
+func TestCheckEmailHandler(t *testing.T) {
+	repo := newFakeUserRepository()
+	repo.byEmail["a@example.com"] = User{ID: "user-1", Name: "Ada", Email: "a@example.com"}
+
+	h := NewHandlers(repo, "test-secret", false)
+
+	tests := []struct {
+		name       string
+		body       string
+		wantExists bool
+	}{
+		{"known email", `{"email":"a@example.com"}`, true},
+		{"unknown email", `{"email":"nope@example.com"}`, false},
+		{"case insensitive", `{"email":"A@Example.com"}`, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/check-email", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			h.CheckEmail(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+			}
+
+			var resp struct {
+				Exists bool `json:"exists"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Exists != tt.wantExists {
+				t.Errorf("exists = %v, want %v", resp.Exists, tt.wantExists)
+			}
+		})
+	}
+}
+
+func TestResetPasswordHandler(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		seedEmail  string
+		wantStatus int
+	}{
+		{"valid reset", `{"email":"a@example.com","newPassword":"newpassword123"}`, "a@example.com", http.StatusOK},
+		{"unknown email", `{"email":"nope@example.com","newPassword":"newpassword123"}`, "a@example.com", http.StatusNotFound},
+		{"short password", `{"email":"a@example.com","newPassword":"short"}`, "a@example.com", http.StatusBadRequest},
+		{"missing fields", `{"email":"a@example.com"}`, "a@example.com", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := newFakeUserRepository()
+			repo.byEmail[tt.seedEmail] = User{ID: "user-1", Name: "Ada", Email: tt.seedEmail}
+			repo.hashes[tt.seedEmail] = "old-hash"
+
+			h := NewHandlers(repo, "test-secret", false)
+
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/reset-password", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+
+			h.ResetPassword(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				if repo.hashes[tt.seedEmail] == "old-hash" {
+					t.Error("expected password hash to be updated")
+				}
+			}
+		})
+	}
 }
 
 func TestLogoutHandler(t *testing.T) {

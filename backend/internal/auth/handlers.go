@@ -138,6 +138,68 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, userResponse{User: user})
 }
 
+func (h *Handlers) CheckEmail(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email string `json:"email"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Email == "" {
+		httpx.Error(w, http.StatusBadRequest, "Email is required.")
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+
+	exists, err := h.repo.EmailExists(r.Context(), email)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]bool{"exists": exists})
+}
+
+// ResetPassword sets a new password for an account identified by email
+// alone, with no possession-of-inbox proof - there is no email delivery
+// wired into this app. Anyone who knows a user's email can change their
+// password through this endpoint.
+func (h *Handlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Email       string `json:"email"`
+		NewPassword string `json:"newPassword"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil ||
+		body.Email == "" || body.NewPassword == "" {
+		httpx.Error(w, http.StatusBadRequest, "Email and new password are required.")
+		return
+	}
+
+	if len(body.NewPassword) < 8 {
+		httpx.Error(w, http.StatusBadRequest, "Password must contain at least 8 characters.")
+		return
+	}
+
+	email := strings.ToLower(strings.TrimSpace(body.Email))
+
+	passwordHash, err := HashPassword(body.NewPassword)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	if err := h.repo.UpdatePasswordByEmail(r.Context(), email, passwordHash); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httpx.Error(w, http.StatusNotFound, "No account found for this email.")
+			return
+		}
+		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		return
+	}
+
+	httpx.JSON(w, http.StatusOK, map[string]string{"message": "Password updated successfully."})
+}
+
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	user, err := h.loader.UserFromRequest(r)
 	if err != nil {

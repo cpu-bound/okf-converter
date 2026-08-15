@@ -2,9 +2,9 @@
   <div class="auth-card">
 
     <div class="brand">
-      <div class="brand-icon">O</div>
-      <h1>Welcome back</h1>
-      <p>Sign in to your account</p>
+      <p class="wordmark">OKF</p>
+      <h1>Bienvenido</h1>
+      <p>Inicia sesión en tu cuenta</p>
     </div>
 
     @if (error()) {
@@ -16,13 +16,13 @@
     <form [formGroup]="loginForm" (ngSubmit)="submit()">
 
       <div class="form-group">
-        <label for="email">Email</label>
+        <label for="email">Correo electrónico</label>
 
         <input
           id="email"
           type="email"
           formControlName="email"
-          placeholder="you@example.com"
+          placeholder="tu@ejemplo.com"
           autocomplete="email"
         />
 
@@ -31,15 +31,15 @@
           loginForm.controls.email.invalid
         ) {
           <small class="field-error">
-            Please enter a valid email address.
+            Introduce una dirección de correo electrónico válida.
           </small>
         }
       </div>
 
       <div class="form-group">
         <div class="password-label">
-          <label for="password">Password</label>
-          <a routerLink="/forgot-password">Forgot password?</a>
+          <label for="password">Contraseña</label>
+          <a routerLink="/forgot-password">¿Olvidaste tu contraseña?</a>
         </div>
 
         <div class="password-wrapper">
@@ -55,9 +55,9 @@
             type="button"
             class="password-toggle"
             (click)="togglePasswordVisibility()"
-            [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'"
+            [attr.aria-label]="showPassword() ? 'Ocultar contraseña' : 'Mostrar contraseña'"
           >
-            {{ showPassword() ? 'Hide' : 'Show' }}
+            {{ showPassword() ? 'Ocultar' : 'Mostrar' }}
           </button>
         </div>
 
@@ -66,30 +66,24 @@
           loginForm.controls.password.invalid
         ) {
           <small class="field-error">
-            Password must be at least 8 characters.
+            La contraseña debe tener al menos 8 caracteres.
           </small>
         }
       </div>
 
       <button class="primary-button" type="submit" [disabled]="submitting()">
-        {{ submitting() ? 'Signing in...' : 'Sign in' }}
+        {{ submitting() ? 'Iniciando sesión...' : 'Iniciar sesión' }}
       </button>
     </form>
 
     <div class="divider">
-      <span>or</span>
+      <span>o</span>
     </div>
 
     <p class="signup-text">
-      Don't have an account?
-      <a routerLink="/register">Create one</a>
+      ¿No tienes una cuenta?
+      <a routerLink="/register">Crea una</a>
     </p>
-
-    <div class="demo-info">
-      <strong>Demo account</strong>
-      <span>demo@example.com</span>
-      <span>password</span>
-    </div>
 
   </div>
 </div>

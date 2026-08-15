@@ -24,6 +24,7 @@ type UserRepository interface {
 	Create(ctx context.Context, name, email, passwordHash string) (User, error)
 	FindByEmailWithPassword(ctx context.Context, email string) (User, string, error)
 	FindByID(ctx context.Context, id string) (User, error)
+	UpdatePasswordByEmail(ctx context.Context, email, passwordHash string) error
 }
 
 type PgUserRepository struct {
@@ -82,6 +83,22 @@ func (r *PgUserRepository) FindByEmailWithPassword(ctx context.Context, email st
 	}
 
 	return u, passwordHash, nil
+}
+
+func (r *PgUserRepository) UpdatePasswordByEmail(ctx context.Context, email, passwordHash string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE users SET password_hash = $1, updated_at = NOW() WHERE email = $2`,
+		passwordHash, email,
+	)
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+
+	return nil
 }
 
 func (r *PgUserRepository) FindByID(ctx context.Context, id string) (User, error) {

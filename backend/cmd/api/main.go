@@ -99,6 +99,8 @@ func run() error {
 	mux.HandleFunc("POST /api/auth/login", authHandlers.Login)
 	mux.HandleFunc("GET /api/auth/me", authHandlers.Me)
 	mux.HandleFunc("POST /api/auth/logout", authHandlers.Logout)
+	mux.HandleFunc("POST /api/auth/check-email", authHandlers.CheckEmail)
+	mux.HandleFunc("POST /api/auth/reset-password", authHandlers.ResetPassword)
 
 	mux.Handle("POST /api/files/upload-url", requireAuth(http.HandlerFunc(fileHandlers.UploadURL)))
 	mux.Handle("POST /api/files/{id}/confirm", requireAuth(http.HandlerFunc(fileHandlers.Confirm)))

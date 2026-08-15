@@ -61,7 +61,7 @@ export class LoginComponent {
           this.submitting.set(false);
           this.error.set(
             error?.error?.message ||
-            'Unable to sign in.'
+            'No se pudo iniciar sesión.'
           );
         }
       });

@@ -1,12 +1,13 @@
 <div class="dashboard">
   <nav class="navbar">
     <div class="nav-brand">
-      <div class="brand-icon small">O</div>
-      <span>OKF Converter</span>
+      <span class="wordmark inline">OKF</span>
+      <span class="nav-brand-divider"></span>
+      <span class="nav-brand-label">Conversor</span>
     </div>
 
     <button class="logout-button" (click)="auth.logout()">
-      Log out
+      Cerrar sesión
     </button>
   </nav>
 
@@ -15,34 +16,34 @@
 
       <div class="success-icon">✓</div>
 
-      <h1>You're signed in!</h1>
+      <h1>¡Has iniciado sesión!</h1>
 
       <p>
-        Welcome back,
+        Bienvenido,
         <strong>{{ auth.user()?.name }}</strong>.
       </p>
 
-      <div class="user-details">
-        <div>
-          <span>Name</span>
-          <strong>{{ auth.user()?.name }}</strong>
+      <dl class="user-details">
+        <div class="user-details-row">
+          <dt>Nombre</dt>
+          <dd>{{ auth.user()?.name }}</dd>
         </div>
 
-        <div>
-          <span>Email</span>
-          <strong>{{ auth.user()?.email }}</strong>
+        <div class="user-details-row">
+          <dt>Correo electrónico</dt>
+          <dd>{{ auth.user()?.email }}</dd>
         </div>
-      </div>
+      </dl>
 
     </div>
   </main>
 
   <div class="upload-section">
 
-  <h2>Your files</h2>
+  <h2>Tus archivos</h2>
 
   <p>
-    Upload a file to your private storage.
+    Sube un archivo que quieras convertir a OKF.
   </p>
 
   <input
@@ -58,7 +59,7 @@
   [disabled]="uploading()"
   (click)="fileInput.click()"
 >
-  Choose file
+  Elegir archivo
 </button>
 
 @if (selectedFile(); as file) {
@@ -73,7 +74,7 @@
     [disabled]="uploading()"
     (click)="uploadFile(file)"
   >
-    {{ uploading() ? 'Uploading...' : 'Upload file' }}
+    {{ uploading() ? 'Subiendo...' : 'Subir archivo' }}
   </button>
 }
 
@@ -86,7 +87,7 @@
 
 @if (uploadComplete()) {
   <div class="alert success">
-    File uploaded successfully.
+    Archivo subido correctamente.
   </div>
 }
 
@@ -99,7 +100,7 @@
 @if (resultUrl(); as url) {
   <div class="result-panel">
     <p class="result-panel-label">
-      Once ready, you can download the result with this link:
+      Cuando esté listo, puedes descargar el bundle con este enlace:
     </p>
 
     <div class="result-url">
@@ -112,12 +113,12 @@
       />
 
       <button type="button" class="copy-button" (click)="copyResultUrl()">
-        {{ copied() ? 'Copied!' : 'Copy' }}
+        {{ copied() ? '¡Copiado!' : 'Copiar' }}
       </button>
     </div>
 
     <a class="primary-button" [href]="url" target="_blank" rel="noopener noreferrer">
-      Download results
+      Descargar resultados
     </a>
 
     <button
@@ -126,7 +127,7 @@
       [disabled]="retrying()"
       (click)="retryConversion()"
     >
-      {{ retrying() ? 'Retrying...' : "Link not working yet? Retry conversion" }}
+      {{ retrying() ? 'Reintentando...' : "¿El enlace no funciona todavía? Reintentar conversión" }}
     </button>
   </div>
 }

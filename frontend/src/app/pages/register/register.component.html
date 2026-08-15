@@ -2,9 +2,9 @@
   <div class="auth-card">
 
     <div class="brand">
-      <div class="brand-icon">O</div>
-      <h1>Create account</h1>
-      <p>Get started with your new account</p>
+      <p class="wordmark">OKF</p>
+      <h1>Crear cuenta</h1>
+      <p>Comienza con tu nueva cuenta</p>
     </div>
 
     @if (error()) {
@@ -16,13 +16,13 @@
     <form [formGroup]="registerForm" (ngSubmit)="submit()">
 
       <div class="form-group">
-        <label for="name">Full name</label>
+        <label for="name">Nombre completo</label>
 
         <input
           id="name"
           type="text"
           formControlName="name"
-          placeholder="John Doe"
+          placeholder="Juan Pérez"
           autocomplete="name"
         />
 
@@ -31,19 +31,19 @@
           registerForm.controls.name.invalid
         ) {
           <small class="field-error">
-            Please enter your name.
+            Introduce tu nombre.
           </small>
         }
       </div>
 
       <div class="form-group">
-        <label for="email">Email</label>
+        <label for="email">Correo electrónico</label>
 
         <input
           id="email"
           type="email"
           formControlName="email"
-          placeholder="you@example.com"
+          placeholder="tu@ejemplo.com"
           autocomplete="email"
         />
 
@@ -52,13 +52,13 @@
           registerForm.controls.email.invalid
         ) {
           <small class="field-error">
-            Please enter a valid email address.
+            Introduce una dirección de correo electrónico válida.
           </small>
         }
       </div>
 
       <div class="form-group">
-        <label for="password">Password</label>
+        <label for="password">Contraseña</label>
 
         <div class="password-wrapper">
           <input
@@ -73,9 +73,9 @@
             type="button"
             class="password-toggle"
             (click)="togglePasswordVisibility()"
-            [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'"
+            [attr.aria-label]="showPassword() ? 'Ocultar contraseña' : 'Mostrar contraseña'"
           >
-            {{ showPassword() ? 'Hide' : 'Show' }}
+            {{ showPassword() ? 'Ocultar' : 'Mostrar' }}
           </button>
         </div>
 
@@ -84,7 +84,7 @@
           registerForm.controls.password.invalid
         ) {
           <small class="field-error">
-            Password must be at least 8 characters.
+            La contraseña debe tener al menos 8 caracteres.
           </small>
         }
       </div>
@@ -92,18 +92,18 @@
       <label class="checkbox">
         <input type="checkbox" formControlName="terms" />
         <span>
-          I agree to the terms and conditions.
+          Acepto los términos y condiciones.
         </span>
       </label>
 
       <button class="primary-button" type="submit" [disabled]="submitting()">
-        {{ submitting() ? 'Creating account...' : 'Create account' }}
+        {{ submitting() ? 'Creando cuenta...' : 'Crear cuenta' }}
       </button>
     </form>
 
     <p class="signup-text">
-      Already have an account?
-      <a routerLink="/login">Sign in</a>
+      ¿Ya tienes una cuenta?
+      <a routerLink="/login">Inicia sesión</a>
     </p>
 
   </div>
