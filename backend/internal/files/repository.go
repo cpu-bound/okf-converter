@@ -19,7 +19,21 @@ type File struct {
 	ContentType  string `json:"content_type"`
 	Size         int64  `json:"size"`
 	Status       string `json:"status"`
+	// Validation classifies the bundle built for this file - valid,
+	// valid_with_warnings or invalid. Null until a conversion has produced a
+	// bundle to classify.
+	Validation *string `json:"validation,omitempty"`
 }
+
+// StatusConverted is the point at which a file's bundle has been validated
+// and written to object storage. It is the only state in which a bundle may
+// be downloaded (§6): an invalid bundle is never stored, and its file stays
+// 'failed'.
+const StatusConverted = "converted"
+
+// Published reports whether this file's bundle passed validation and was
+// actually stored, which is what gates the download.
+func (rec FileRecord) Published() bool { return rec.Status == StatusConverted }
 
 // FileRecord carries the fields the confirm/retry/outputs flows need
 // internally (object_key, declared size) alongside the public File fields.
@@ -30,6 +44,11 @@ type FileRecord struct {
 	ContentType  string
 	Size         int64
 	Status       string
+	Validation   *string
+	// ValidationReport is bundle.Report as stored, passed through to the
+	// client verbatim rather than decoded and re-encoded - this package has
+	// no reason to know the report's shape.
+	ValidationReport []byte
 }
 
 // File returns the public shape of rec, for handlers (like Status) that
@@ -41,6 +60,7 @@ func (rec FileRecord) File() File {
 		ContentType:  rec.ContentType,
 		Size:         rec.Size,
 		Status:       rec.Status,
+		Validation:   rec.Validation,
 	}
 }
 
@@ -71,10 +91,10 @@ func (r *PgFileRepository) Create(ctx context.Context, userID, objectKey, origin
 		`
 		INSERT INTO files (user_id, object_key, original_name, content_type, size)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, original_name, content_type, size, status
+		RETURNING id, original_name, content_type, size, status, validation
 		`,
 		userID, objectKey, originalName, contentType, size,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
 	if err != nil {
 		return File{}, fmt.Errorf("create file: %w", err)
 	}
@@ -86,9 +106,13 @@ func (r *PgFileRepository) FindForUser(ctx context.Context, id, userID string) (
 	var rec FileRecord
 
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, object_key, original_name, content_type, size, status FROM files WHERE id = $1 AND user_id = $2`,
+		`
+		SELECT id, object_key, original_name, content_type, size, status, validation, validation_report
+		FROM files WHERE id = $1 AND user_id = $2
+		`,
 		id, userID,
-	).Scan(&rec.ID, &rec.ObjectKey, &rec.OriginalName, &rec.ContentType, &rec.Size, &rec.Status)
+	).Scan(&rec.ID, &rec.ObjectKey, &rec.OriginalName, &rec.ContentType, &rec.Size, &rec.Status,
+		&rec.Validation, &rec.ValidationReport)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return FileRecord{}, ErrNotFound
@@ -110,10 +134,10 @@ func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, b
 		`
 		UPDATE files SET status = 'converting'
 		WHERE id = $1 AND status = 'failed'
-		RETURNING id, original_name, content_type, size, status
+		RETURNING id, original_name, content_type, size, status, validation
 		`,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
 	if err == nil {
 		return f, true, nil
 	}
@@ -122,9 +146,9 @@ func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, b
 	}
 
 	err = r.pool.QueryRow(ctx,
-		`SELECT id, original_name, content_type, size, status FROM files WHERE id = $1`,
+		`SELECT id, original_name, content_type, size, status, validation FROM files WHERE id = $1`,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
 	if err != nil {
 		return File{}, false, fmt.Errorf("find file: %w", err)
 	}
@@ -138,10 +162,10 @@ func (r *PgFileRepository) MarkReady(ctx context.Context, id string) (File, erro
 	err := r.pool.QueryRow(ctx,
 		`
 		UPDATE files SET status = 'ready' WHERE id = $1
-		RETURNING id, original_name, content_type, size, status
+		RETURNING id, original_name, content_type, size, status, validation
 		`,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status)
+	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
 	if err != nil {
 		return File{}, fmt.Errorf("mark file ready: %w", err)
 	}
@@ -155,6 +179,34 @@ func (r *PgFileRepository) MarkReady(ctx context.Context, id string) (File, erro
 func (r *PgFileRepository) UpdateStatus(ctx context.Context, id, status string) error {
 	if _, err := r.pool.Exec(ctx, `UPDATE files SET status = $2 WHERE id = $1`, id, status); err != nil {
 		return fmt.Errorf("update file status: %w", err)
+	}
+	return nil
+}
+
+// SaveValidation records how the bundle built for this file was classified,
+// together with the full report. Called by the conversion pipeline before it
+// decides whether to publish, so the verdict is on record even for a bundle
+// that is refused.
+func (r *PgFileRepository) SaveValidation(ctx context.Context, id, verdict string, report []byte) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE files SET validation = $2, validation_report = $3 WHERE id = $1`,
+		id, verdict, report,
+	)
+	if err != nil {
+		return fmt.Errorf("save validation: %w", err)
+	}
+	return nil
+}
+
+// ClearValidation drops a previous attempt's verdict when a new conversion
+// starts, so a retry in flight never shows the result it is replacing.
+func (r *PgFileRepository) ClearValidation(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE files SET validation = NULL, validation_report = NULL WHERE id = $1`,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("clear validation: %w", err)
 	}
 	return nil
 }

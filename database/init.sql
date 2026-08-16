@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS files (
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'ready', 'converting', 'converted', 'failed')),
 
+    -- Clasificación del bundle generado. NULL mientras no se haya construido
+    -- ninguno. Un bundle 'invalid' no se publica: el archivo queda en
+    -- 'failed' y no se habilita la descarga.
+    validation TEXT
+        CHECK (validation IN ('valid', 'valid_with_warnings', 'invalid')),
+
+    -- Informe regla por regla que produjo esa clasificación, tal como lo
+    -- serializa bundle.Report.
+    validation_report JSONB,
+
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

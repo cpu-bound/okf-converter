@@ -77,10 +77,11 @@ type Bundle struct {
 	// Retained so RefreshLog can re-render log.md after the caller adds
 	// entries that only exist once the bundle is built - validation results,
 	// above all.
-	src      Source
-	title    string
-	concepts []concept
-	log      *Log
+	src        Source
+	title      string
+	concepts   []concept
+	log        *Log
+	validation *Report
 }
 
 type concept struct {
@@ -143,7 +144,7 @@ func Build(src Source, units []Unit, log *Log) (Bundle, error) {
 // carrying it.
 func (b *Bundle) RefreshLog() {
 	rc := renderContext{title: b.title, root: b.Root, src: b.src, concepts: b.concepts}
-	content := []byte(renderLog(rc, b.log))
+	content := []byte(renderLog(rc, b.log, b.validation))
 	for i := range b.Files {
 		if b.Files[i].Name == LogFile {
 			b.Files[i].Content = content
@@ -156,6 +157,19 @@ func (b *Bundle) RefreshLog() {
 // Log returns the log the bundle was built with, so callers can append
 // entries and then call RefreshLog.
 func (b *Bundle) Log() *Log { return b.log }
+
+// SetValidation attaches the verdict of Validate, so the next RefreshLog
+// writes the rule-by-rule outcome into log.md - the §3 requirement that the
+// log record the validations the bundle went through, including the ones it
+// passed.
+//
+// Note that log.md is itself one of the validated files, so the report
+// describes the bundle as it stood *before* this call. That is deliberate:
+// the alternative is a log that has to describe its own contents.
+func (b *Bundle) SetValidation(r Report) {
+	b.validation = &r
+	b.RefreshLog()
+}
 
 // Find returns the content of the named file within the bundle.
 func (b Bundle) Find(name string) ([]byte, bool) {
@@ -294,7 +308,7 @@ func renderConcept(rc renderContext, c concept) string {
 	return b.String()
 }
 
-func renderLog(rc renderContext, log *Log) string {
+func renderLog(rc renderContext, log *Log, validation *Report) string {
 	title, src, concepts := rc.title, rc.src, rc.concepts
 
 	var b strings.Builder
@@ -334,7 +348,64 @@ func renderLog(rc renderContext, log *Log) string {
 		)
 	}
 
+	if validation != nil {
+		b.WriteString("\n")
+		b.WriteString(renderValidation(*validation))
+	}
+
 	return b.String()
+}
+
+// renderValidation writes the rule-by-rule outcome into log.md. Every rule is
+// listed, passed or not: the §3 requirement is to record "las validaciones
+// superadas", so a log that only showed failures would leave the reader
+// unable to tell what was actually checked.
+func renderValidation(r Report) string {
+	var b strings.Builder
+
+	b.WriteString("## Validación\n\n")
+	fmt.Fprintf(&b, "- **Resultado:** %s\n", r.Verdict.Label())
+	fmt.Fprintf(&b, "- **Validez de plataforma:** %s\n", r.Platform.Label())
+	fmt.Fprintf(&b, "- **Conformidad OKF:** %s\n\n", r.OKF.Label())
+
+	b.WriteString("| Regla | Ámbito | Severidad | Resultado |\n| --- | --- | --- | --- |\n")
+	for _, c := range r.Checks {
+		outcome := "superada"
+		if !c.Passed {
+			outcome = "**no superada**"
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
+			escapeTableCell(c.Rule), scopeLabel(c.Scope), severityLabel(c.Severity), outcome)
+	}
+
+	failures := r.Failures()
+	if len(failures) == 0 {
+		return b.String()
+	}
+
+	b.WriteString("\n### Hallazgos\n\n")
+	for _, c := range failures {
+		fmt.Fprintf(&b, "- **%s** (%s)\n", escapeLinkText(c.Rule), severityLabel(c.Severity))
+		for _, detail := range c.Details {
+			fmt.Fprintf(&b, "  - %s\n", detail)
+		}
+	}
+
+	return b.String()
+}
+
+func scopeLabel(s Scope) string {
+	if s == ScopeOKF {
+		return "OKF"
+	}
+	return "plataforma"
+}
+
+func severityLabel(s Severity) string {
+	if s == SeverityWarning {
+		return "advertencia"
+	}
+	return "error"
 }
 
 // documentTitle derives a human title from the uploaded file name: drop the

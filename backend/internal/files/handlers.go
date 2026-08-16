@@ -166,9 +166,10 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"file": file, "resultUrl": resultURL})
 }
 
-// Status returns a file's current state, so the frontend can poll for
+// Status returns a file's current state - including the validation report of
+// the bundle built for it, when there is one - so the frontend can poll for
 // conversion progress without depending on any server-side session or
-// connection - a plain, stateless, per-request read.
+// connection: a plain, stateless, per-request read.
 func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
@@ -189,7 +190,16 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpx.JSON(w, http.StatusOK, map[string]File{"file": record.File()})
+	response := map[string]any{"file": record.File()}
+
+	// The report is stored as the pipeline serialized it, so it goes out
+	// verbatim rather than being decoded and re-encoded by a package that has
+	// no reason to know its shape.
+	if len(record.ValidationReport) > 0 {
+		response["validation_report"] = json.RawMessage(record.ValidationReport)
+	}
+
+	httpx.JSON(w, http.StatusOK, response)
 }
 
 // Retry re-enqueues a conversion job for a file whose previous attempt

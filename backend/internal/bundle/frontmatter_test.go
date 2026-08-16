@@ -6,27 +6,23 @@ import (
 	"time"
 )
 
-// parseFrontmatter pulls the YAML block off the front of a bundle file and
-// returns it as key/value pairs, so tests can assert on the fields OKF
+// frontmatterFields pulls the YAML block off the front of a bundle file and
+// returns its values unquoted, so tests can assert on the fields OKF
 // consumers query rather than on exact formatting.
-func parseFrontmatter(t *testing.T, content []byte) map[string]string {
+//
+// It goes through the same parser the validator uses, so a file the tests can
+// read is by construction a file validation can read.
+func frontmatterFields(t *testing.T, content []byte) map[string]string {
 	t.Helper()
 
-	text := string(content)
-	if !strings.HasPrefix(text, "---\n") {
-		t.Fatalf("file does not open with a YAML frontmatter block:\n%s", text)
+	raw, ok := parseFrontmatter(content)
+	if !ok {
+		t.Fatalf("file does not open with a YAML frontmatter block:\n%s", content)
 	}
 
-	body, _, found := strings.Cut(text[len("---\n"):], "\n---\n")
-	if !found {
-		t.Fatalf("frontmatter block is not closed:\n%s", text)
-	}
-
-	fields := map[string]string{}
-	for _, line := range strings.Split(body, "\n") {
-		if key, value, ok := strings.Cut(line, ": "); ok {
-			fields[strings.TrimSpace(key)] = strings.Trim(strings.TrimSpace(value), `"`)
-		}
+	fields := make(map[string]string, len(raw))
+	for key, value := range raw {
+		fields[key] = unquoteYAML(value)
 	}
 	return fields
 }
@@ -48,7 +44,7 @@ func TestEveryFileCarriesAnOKFType(t *testing.T) {
 	}
 
 	for _, f := range b.Files {
-		fields := parseFrontmatter(t, f.Content)
+		fields := frontmatterFields(t, f.Content)
 
 		want, known := wantTypes[f.Name]
 		if !known {
@@ -69,7 +65,7 @@ func TestConceptFrontmatterCarriesTheQueryableFields(t *testing.T) {
 		t.Fatal("bundle is missing 01-introduccion.md")
 	}
 
-	fields := parseFrontmatter(t, content)
+	fields := frontmatterFields(t, content)
 
 	if fields["title"] != "Introducción" {
 		t.Errorf("title = %q, want %q", fields["title"], "Introducción")
@@ -103,7 +99,7 @@ func TestFrontmatterQuotesTroublesomeTitles(t *testing.T) {
 		t.Fatal("bundle holds no concept file")
 	}
 
-	if got := parseFrontmatter(t, content)["title"]; !strings.Contains(got, "costos") {
+	if got := frontmatterFields(t, content)["title"]; !strings.Contains(got, "costos") {
 		t.Errorf("title = %q, want the original title preserved", got)
 	}
 	if !strings.Contains(string(content), `title: "Análisis: \"costos\" & márgenes"`) {

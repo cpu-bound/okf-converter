@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -75,11 +76,29 @@ func (s *fakeObjectStore) PutObject(ctx context.Context, objectKey string, r io.
 type fakeStatusUpdater struct {
 	mu       sync.Mutex
 	statuses []string
+	verdict  string
+	report   []byte
+	clearedN int
 }
 
 func (f *fakeStatusUpdater) UpdateStatus(ctx context.Context, id, status string) error {
 	f.mu.Lock()
 	f.statuses = append(f.statuses, status)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeStatusUpdater) SaveValidation(ctx context.Context, id, verdict string, report []byte) error {
+	f.mu.Lock()
+	f.verdict, f.report = verdict, report
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeStatusUpdater) ClearValidation(ctx context.Context, id string) error {
+	f.mu.Lock()
+	f.clearedN++
+	f.verdict, f.report = "", nil
 	f.mu.Unlock()
 	return nil
 }
@@ -374,6 +393,117 @@ func TestConvertDownloadFailureMarksFailed(t *testing.T) {
 	}
 
 	wantStatuses := []string{StatusConverting, StatusFailed}
+	if !equalStrings(h.statuses.statuses, wantStatuses) {
+		t.Errorf("statuses = %v, want %v", h.statuses.statuses, wantStatuses)
+	}
+}
+
+// A published bundle carries its verdict on the file record and inside its
+// own log.md, so the user can see not just that it worked but what was
+// checked.
+func TestConvertRecordsTheValidationVerdict(t *testing.T) {
+	const src = "user-1/src.md"
+	h := newHarness(map[string]string{src: "# Uno\n\na\n\n# Dos\n\nb"})
+
+	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: src, ContentType: "text/markdown", OriginalName: "notas.md"}
+	if err := h.conv.Convert(context.Background(), job); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	if h.statuses.verdict != string(bundle.VerdictValid) {
+		t.Errorf("recorded verdict = %q, want %q", h.statuses.verdict, bundle.VerdictValid)
+	}
+
+	var report bundle.Report
+	if err := json.Unmarshal(h.statuses.report, &report); err != nil {
+		t.Fatalf("stored report is not valid JSON: %v", err)
+	}
+	if len(report.Checks) == 0 {
+		t.Error("stored report lists no checks")
+	}
+
+	// The previous attempt's verdict is dropped before a new one starts, so a
+	// retry in flight never shows the result it is replacing.
+	if h.statuses.clearedN != 1 {
+		t.Errorf("ClearValidation called %d times, want 1", h.statuses.clearedN)
+	}
+
+	log, _ := h.bundleFile(src, bundle.LogFile)
+	if !strings.Contains(log, "## Validación") {
+		t.Errorf("log.md does not carry the validation section:\n%s", log)
+	}
+}
+
+// §6: a bundle that fails validation is not published - nothing reaches
+// object storage, no output rows are recorded, no download is possible - but
+// the verdict is still on record so the user can be told why.
+func TestConvertRefusesToPublishAnInvalidBundle(t *testing.T) {
+	const src = "user-1/src.md"
+	h := newHarness(map[string]string{src: "# Uno\n\na\n\n# Dos\n\nb"})
+
+	h.conv.validator = func(b bundle.Bundle) bundle.Report {
+		return bundle.Report{
+			Verdict:  bundle.VerdictInvalid,
+			Platform: bundle.VerdictInvalid,
+			OKF:      bundle.VerdictValid,
+			Checks: []bundle.Check{{
+				ID:       "minimum-structure",
+				Scope:    bundle.ScopePlatform,
+				Rule:     "El bundle contiene index.md, log.md y al menos un concepto",
+				Severity: bundle.SeverityError,
+				Details:  []string{"falta `log.md`"},
+			}},
+		}
+	}
+
+	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: src, ContentType: "text/markdown", OriginalName: "notas.md"}
+	err := h.conv.Convert(context.Background(), job)
+	if err == nil {
+		t.Fatal("expected an error when the bundle fails validation, got nil")
+	}
+	if !strings.Contains(err.Error(), "no superó la validación") {
+		t.Errorf("error = %q, want it to name validation as the cause", err)
+	}
+
+	if len(h.store.objects) != 1 {
+		t.Errorf("stored %d objects, want only the untouched source document", len(h.store.objects))
+	}
+	if _, ok := h.store.objects[storage.ResultObjectName(src)]; ok {
+		t.Error("an invalid bundle was packaged and stored anyway")
+	}
+	if names := h.outputs.names(); len(names) != 0 {
+		t.Errorf("recorded %v as downloadable outputs of an invalid bundle", names)
+	}
+
+	if h.statuses.verdict != string(bundle.VerdictInvalid) {
+		t.Errorf("recorded verdict = %q, want %q", h.statuses.verdict, bundle.VerdictInvalid)
+	}
+
+	wantStatuses := []string{StatusConverting, StatusFailed}
+	if !equalStrings(h.statuses.statuses, wantStatuses) {
+		t.Errorf("statuses = %v, want %v", h.statuses.statuses, wantStatuses)
+	}
+}
+
+// Warnings are not a reason to withhold a bundle: it is published, and the
+// classification records that it was not spotless.
+func TestConvertPublishesABundleWithWarnings(t *testing.T) {
+	const src = "user-1/src.md"
+	h := newHarness(map[string]string{src: "# Uno\n\nver [el anexo](anexo-b.md)"})
+
+	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: src, ContentType: "text/markdown", OriginalName: "notas.md"}
+	if err := h.conv.Convert(context.Background(), job); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	if h.statuses.verdict != string(bundle.VerdictWithWarnings) {
+		t.Errorf("recorded verdict = %q, want %q", h.statuses.verdict, bundle.VerdictWithWarnings)
+	}
+	if _, ok := h.store.objects[storage.ResultObjectName(src)]; !ok {
+		t.Error("a bundle with only warnings was not published")
+	}
+
+	wantStatuses := []string{StatusConverting, StatusConverted}
 	if !equalStrings(h.statuses.statuses, wantStatuses) {
 		t.Errorf("statuses = %v, want %v", h.statuses.statuses, wantStatuses)
 	}

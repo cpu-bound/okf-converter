@@ -42,4 +42,14 @@ var (
 		Help:    "Time spent converting a single job.",
 		Buckets: prometheus.DefBuckets,
 	})
+
+	// BundlesValidatedTotal counts built bundles by validation verdict
+	// ("valid", "valid_with_warnings", "invalid"), so the share of documents
+	// that fail validation is visible separately from the share of jobs that
+	// crash - two very different failure modes that would otherwise both show
+	// up only as a failed job.
+	BundlesValidatedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "convert_bundles_validated_total",
+		Help: "Bundles validated before publishing, by verdict.",
+	}, []string{"verdict"})
 )

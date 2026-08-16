@@ -86,6 +86,43 @@ El formato se valida en la recepción: una subida que el pipeline no podría
 convertir se rechaza con `415` antes de firmar la URL, en vez de aceptarse y
 fallar en un worker minutos después.
 
+## Validación del bundle
+
+Ningún bundle se publica sin haber sido validado. La comprobación ocurre
+mientras el bundle todavía está en memoria, así que un bundle inválido nunca
+llega al almacenamiento de objetos y nunca se ofrece para descarga.
+
+Se miden dos cosas por separado:
+
+- **Validez de plataforma** — ¿es un bundle usable?
+- **Conformidad OKF** — ¿cumple la especificación Open Knowledge Format v0.1?
+
+| Regla | Ámbito | Severidad |
+| --- | --- | --- |
+| Contiene `index.md`, `log.md` y al menos un concepto | plataforma | error |
+| Todos los enlaces de `index.md` resuelven dentro del bundle | plataforma | error |
+| Todos los conceptos son alcanzables desde `index.md` | plataforma | error |
+| Los enlaces relativos dentro de los conceptos resuelven | plataforma | advertencia |
+| Todos los archivos abren con frontmatter YAML | OKF | error |
+| Todos los archivos declaran el campo obligatorio `type` | OKF | error |
+| Todos los archivos traen los campos estándar consultables | OKF | advertencia |
+| `index.md` y `log.md` declaran el tipo de su rol | OKF | advertencia |
+
+El resultado se clasifica en **válido**, **válido con advertencias** o
+**inválido**, y se guarda en la tabla `files` (`validation` y el informe regla
+por regla en `validation_report`). Un bundle inválido deja el archivo en
+`failed` con el motivo; uno con advertencias se publica igual y las reporta.
+
+Que una regla sea *advertencia* y no *error* tiene una razón concreta: el
+cuerpo de un concepto arrastra el Markdown del documento original, así que un
+enlace relativo que el autor escribió hacia un archivo que no subió es un
+defecto real que hay que reportar, pero no uno por el que valga la pena negarse
+a entregar el bundle.
+
+El veredicto completo queda también dentro del propio bundle, en la sección
+`## Validación` de `log.md`, con todas las reglas —las superadas incluidas—,
+que es lo que pide el §3 del enunciado sobre trazabilidad.
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -169,8 +206,8 @@ flowchart LR
 
 Desde que un usuario sube un archivo hasta que puede descargar el bundle,
 incluyendo las decisiones que toma el sistema en cada paso (validación de
-tamaño, formato del documento, tamaño de los bloques y resultado final de la
-conversión).
+tamaño, formato del documento, tamaño de los bloques, validación del bundle
+generado y resultado final de la conversión).
 
 ```mermaid
 flowchart TD
@@ -201,11 +238,15 @@ flowchart TD
     N2 --> V
     L4 --> V
     V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
-    V --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
+    V --> W["Se valida el bundle todavía en memoria:\nestructura mínima y enlaces (plataforma)\n+ frontmatter y campo 'type' (OKF)"]
+    W --> W1["Se guarda el veredicto y el informe\nregla por regla en la BD, pase o no"]
+    W1 --> X{"¿Clasificación?"}
+    X -- "inválido" --> S
+    X -- "válido / válido con advertencias" --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
     O --> P["Se empaqueta el bundle en un .zip\ny se guarda en la clave ya prefirmada"]
     P --> Q{"¿La conversión tuvo éxito?"}
     Q -- Sí --> R(["Archivo 'converted'\nel resultUrl entregado antes ya sirve el .zip"])
-    Q -- No --> S(["Archivo 'failed'"])
+    Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
     S --> T["El usuario puede pedir un reintento\nPOST /api/files/:id/retry"]
     T -.-> I
 ```

@@ -3,10 +3,13 @@ package convert
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"okf-converter/backend/internal/bundle"
+	"okf-converter/backend/internal/metrics"
 	"okf-converter/backend/internal/storage"
 )
 
@@ -28,6 +31,13 @@ const markdownContentType = "text/markdown; charset=utf-8"
 // only through the narrow slice of behavior it actually needs.
 type FileStatusUpdater interface {
 	UpdateStatus(ctx context.Context, id, status string) error
+	// SaveValidation records the verdict of the bundle's validation and the
+	// full rule-by-rule report, so the API can explain to the user why a
+	// bundle was published, published with warnings, or refused.
+	SaveValidation(ctx context.Context, id, verdict string, report []byte) error
+	// ClearValidation drops the verdict of a previous attempt, so a retry
+	// never shows a stale result while it is running.
+	ClearValidation(ctx context.Context, id string) error
 }
 
 // OutputRecorder is satisfied by *files.PgOutputRepository, for the same
@@ -62,10 +72,23 @@ type BundleConverter struct {
 	files   FileStatusUpdater
 	outputs OutputRecorder
 	jobs    JobStatusUpdater
+
+	// validator classifies the built bundle before it is published. It is a
+	// field rather than a direct call to bundle.Validate so tests can drive
+	// the refusal path - a correct generator never produces an invalid bundle
+	// on its own, and the branch that refuses to publish one is exactly the
+	// branch that must not rot.
+	validator func(bundle.Bundle) bundle.Report
 }
 
 func NewBundleConverter(store storage.Storage, files FileStatusUpdater, outputs OutputRecorder, jobs JobStatusUpdater) *BundleConverter {
-	return &BundleConverter{storage: store, files: files, outputs: outputs, jobs: jobs}
+	return &BundleConverter{
+		storage:   store,
+		files:     files,
+		outputs:   outputs,
+		jobs:      jobs,
+		validator: bundle.Validate,
+	}
 }
 
 func (c *BundleConverter) Convert(ctx context.Context, job Job) error {
@@ -112,6 +135,9 @@ func (c *BundleConverter) convert(ctx context.Context, job Job) error {
 	if err := c.outputs.ClearForFile(ctx, job.FileID); err != nil {
 		return fmt.Errorf("clear previous outputs: %w", err)
 	}
+	if err := c.files.ClearValidation(ctx, job.FileID); err != nil {
+		return fmt.Errorf("clear previous validation: %w", err)
+	}
 
 	src, err := c.storage.GetObject(ctx, job.ObjectKey)
 	if err != nil {
@@ -141,10 +167,48 @@ func (c *BundleConverter) convert(ctx context.Context, job Job) error {
 	}
 
 	log.Step("bundle armado: %d archivo(s), raíz `%s/`", len(b.Files), b.Root)
-	b.RefreshLog()
+
+	if err := c.validate(ctx, job, &b, log); err != nil {
+		return err
+	}
 
 	if err := c.store(ctx, job, b); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validate is the gate the enunciado (§6) puts in front of publication: the
+// bundle is checked while it is still only in memory, so an invalid one never
+// reaches object storage and no download is ever offered for it.
+//
+// The verdict is persisted either way - a refused bundle is exactly the case
+// where the user most needs to be told which rule failed.
+func (c *BundleConverter) validate(ctx context.Context, job Job, b *bundle.Bundle, log *bundle.Log) error {
+	report := c.validator(*b)
+
+	log.Step("bundle validado: %s (plataforma: %s, conformidad OKF: %s)",
+		report.Verdict.Label(), report.Platform.Label(), report.OKF.Label())
+	for _, check := range report.Failures() {
+		log.Step("regla no superada — %s: %s", check.Rule, strings.Join(check.Details, "; "))
+	}
+
+	// Attaching the report re-renders log.md, so the published bundle carries
+	// its own validation record.
+	b.SetValidation(report)
+	metrics.BundlesValidatedTotal.WithLabelValues(string(report.Verdict)).Inc()
+
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("encode validation report: %w", err)
+	}
+	if err := c.files.SaveValidation(ctx, job.FileID, string(report.Verdict), payload); err != nil {
+		return fmt.Errorf("save validation report: %w", err)
+	}
+
+	if !report.Verdict.Publishable() {
+		return fmt.Errorf("el bundle generado no superó la validación — %s", report.Summary())
 	}
 
 	return nil
