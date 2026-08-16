@@ -180,12 +180,12 @@ func (h *harness) bundleFile(objectKey, name string) (string, bool) {
 }
 
 func TestConvertProducesAnOKFBundle(t *testing.T) {
-	const src = "user-1/src.txt"
+	const src = "user-1/src.md"
 	h := newHarness(map[string]string{
-		src: "Introducción\n\nprimer párrafo\n\nsegundo párrafo",
+		src: "# Introducción\n\nprimer párrafo\n\n# Metodología\n\nsegundo párrafo\n\n# Conclusiones\n\ntercero",
 	})
 
-	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: src, ContentType: "text/plain", OriginalName: "notas-de-clase.txt", Size: 42}
+	job := Job{JobID: "job-1", FileID: "file-1", ObjectKey: src, ContentType: "text/markdown", OriginalName: "notas-de-clase.md", Size: 42}
 	if err := h.conv.Convert(context.Background(), job); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -218,9 +218,11 @@ func TestConvertProducesAnOKFBundle(t *testing.T) {
 		t.Errorf("index.md lists concepts out of document order:\n%s", index)
 	}
 
-	// The first concept's title comes from its own first line.
-	if !strings.Contains(index, "Introducción") {
-		t.Errorf("index.md does not carry the first unit's title:\n%s", index)
+	// Titles come from the document's own headings.
+	for _, want := range []string{"Introducción", "Metodología", "Conclusiones"} {
+		if !strings.Contains(index, want) {
+			t.Errorf("index.md does not carry the section title %q:\n%s", want, index)
+		}
 	}
 
 	log, _ := h.bundleFile(src, bundle.LogFile)

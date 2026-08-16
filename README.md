@@ -36,6 +36,34 @@ Los archivos del bundle se guardan además como objetos individuales en MinIO,
 así que se puede leer `index.md` sin descargar el paquete completo, y el
 bundle entero se empaqueta como un `.zip` con una sola carpeta raíz.
 
+## Formatos de entrada y segmentación
+
+Una unidad lógica es una sección del documento, no un párrafo arbitrario. La
+segmentación parte de la estructura del propio documento:
+
+| Formato | Cómo se detecta la estructura |
+| --- | --- |
+| Markdown (`.md`) | Encabezados ATX (`#`) y subrayados setext; lo que está dentro de un bloque de código no cuenta |
+| HTML (`.html`, `.htm`) | Se renderiza a Markdown (`<h1>`–`<h6>` → encabezados) y se segmenta igual; `<script>`, `<style>` y `<head>` se descartan |
+| Texto plano (`.txt`) | Encabezados Markdown, secciones numeradas (`3.1 Metodología`, `1. Introducción`) y palabras clave (`Capítulo IV`, `Sección 2`) |
+| PDF (`.pdf`) | Se extrae el texto reconstruyendo los espacios por posición de carácter y se trata como texto plano |
+| CSV (`.csv`) | Cada fila es una unidad; ninguna detección de encabezados encontraría sus divisiones reales |
+
+Dos decisiones que vale la pena conocer:
+
+- **Se segmenta por el nivel más alto que de verdad divide el documento.** Un
+  informe cuyo único encabezado de nivel 1 es su propio título se divide por
+  sus secciones de nivel 2, no se deja entero. Las subsecciones quedan dentro
+  de la sección a la que pertenecen.
+- **Sin estructura, un documento breve es un solo concepto**, que es
+  exactamente lo que pide el enunciado para el caso del documento corto sin
+  divisiones. Solo un documento sin estructura y demasiado grande para eso
+  (más de 20.000 bytes) cae al respaldo de dividir por párrafos.
+
+El formato se valida en la recepción: una subida que el pipeline no podría
+convertir se rechaza con `415` antes de firmar la URL, en vez de aceptarse y
+fallar en un worker minutos después.
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -132,20 +160,25 @@ flowchart TD
     F -- No --> F1(["Se elimina el objeto y el registro\nError 409"])
     F -- Sí --> G["Archivo pasa a 'ready'\nse firma la URL de descarga del resultado (24h)\nse encola un trabajo en RabbitMQ"]
     G --> H(["API responde de inmediato con resultUrl,\naunque la conversión todavía no ocurrió"])
-    G -. async .-> I["Un worker del pool en 'api'\nconsume el trabajo de RabbitMQ"]
+    G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
     I --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
     J --> K{"¿Qué formato tiene?"}
-    K -- ".txt" --> L1["Se divide por líneas en blanco → bloques"]
-    K -- ".csv" --> L2["Cada fila del CSV → un bloque"]
-    K -- ".pdf" --> L3["Se extrae el texto página por página\n(reconstruyendo espacios por posición de carácter)\ny luego se divide igual que .txt"]
-    L1 --> M{"¿Algún bloque supera\nlos 20.000 bytes?"}
+    K -- ".md" --> L1["Encabezados '#' y subrayados"]
+    K -- ".html" --> L2["Se renderiza como Markdown:\nh1-h6 → encabezados"]
+    K -- ".txt / .pdf" --> L3["Encabezados, secciones numeradas\ny palabras clave (Capítulo, Sección…)"]
+    K -- ".csv" --> L4["Cada fila es una unidad"]
+    L1 --> M{"¿Se detectó\nestructura?"}
     L2 --> M
     L3 --> M
-    M -- Sí --> M1["Se corta en bloques adicionales\nsin romper caracteres UTF-8"]
-    M -- No --> N["Se mantiene como un solo bloque"]
-    M1 --> U["Cada bloque pasa a ser una unidad lógica,\ncon título derivado de su primera línea"]
-    N --> U
-    U --> V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
+    M -- Sí --> M1["Una unidad por sección del nivel más alto\nque de verdad divide el documento;\nlas subsecciones quedan dentro de la suya"]
+    M -- No --> N{"¿Documento\nbreve?"}
+    N -- Sí --> N1["Todo el documento\nes un único concepto"]
+    N -- No --> N2["Se divide por párrafos, cortando bloques\nde más de 20.000 bytes sin romper UTF-8"]
+    M1 --> V
+    N1 --> V
+    N2 --> V
+    L4 --> V
+    V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
     V --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
     O --> P["Se empaqueta el bundle en un .zip\ny se guarda en la clave ya prefirmada"]
     P --> Q{"¿La conversión tuvo éxito?"}

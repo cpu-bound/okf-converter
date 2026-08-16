@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ledongthuc/pdf"
+	"golang.org/x/net/html"
 )
 
 // blankLineRE splits text into paragraphs on one or more blank lines.
@@ -30,6 +31,8 @@ type sourceFormat int
 const (
 	formatUnknown sourceFormat = iota
 	formatText
+	formatMarkdown
+	formatHTML
 	formatCSV
 	formatPDF
 )
@@ -40,6 +43,10 @@ const (
 func detectFormat(contentType, filename string) sourceFormat {
 	ct := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
 	switch ct {
+	case "text/markdown", "text/x-markdown":
+		return formatMarkdown
+	case "text/html", "application/xhtml+xml":
+		return formatHTML
 	case "text/plain":
 		return formatText
 	case "text/csv", "application/csv", "application/vnd.ms-excel":
@@ -50,6 +57,10 @@ func detectFormat(contentType, filename string) sourceFormat {
 
 	name := strings.ToLower(filename)
 	switch {
+	case strings.HasSuffix(name, ".md"), strings.HasSuffix(name, ".markdown"):
+		return formatMarkdown
+	case strings.HasSuffix(name, ".html"), strings.HasSuffix(name, ".htm"):
+		return formatHTML
 	case strings.HasSuffix(name, ".txt"):
 		return formatText
 	case strings.HasSuffix(name, ".csv"):
@@ -61,29 +72,27 @@ func detectFormat(contentType, filename string) sourceFormat {
 	return formatUnknown
 }
 
-// extractParagraphs reads r and splits its text content into chunks - one
-// output file per chunk. What counts as a "paragraph" depends on the source
-// format: blank-line-delimited blocks for text/PDF, one chunk per row for
-// CSV.
-func extractParagraphs(contentType, filename string, r io.Reader) ([]string, error) {
-	switch detectFormat(contentType, filename) {
-	case formatText:
-		return extractText(r)
-	case formatCSV:
-		return extractCSV(r)
-	case formatPDF:
-		return extractPDF(r)
-	default:
-		return nil, fmt.Errorf("unsupported content type %q", contentType)
-	}
+// Supports reports whether the platform can convert a document of this
+// format. The upload endpoint uses it to reject an unconvertible document at
+// reception rather than accepting it and failing in a worker minutes later
+// (see the recommendation in §11 of the brief: treat input documents as
+// untrusted and validate format and size on the way in).
+func Supports(contentType, filename string) bool {
+	return detectFormat(contentType, filename) != formatUnknown
 }
 
-func extractText(r io.Reader) ([]string, error) {
+// SupportedFormatList names the accepted formats, for error messages shown
+// to the user.
+func SupportedFormatList() string {
+	return "Markdown, HTML, texto plano, CSV o PDF"
+}
+
+func readText(r io.Reader) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("read text: %w", err)
+		return "", fmt.Errorf("read text: %w", err)
 	}
-	return splitParagraphs(string(data)), nil
+	return string(data), nil
 }
 
 func splitParagraphs(s string) []string {
@@ -128,7 +137,7 @@ func splitOversizedBlock(s string) []string {
 	return out
 }
 
-// extractCSV treats each row as its own chunk, joining fields with ", "
+// extractCSV treats each row as its own record, joining fields with ", "
 // into a single line of text.
 func extractCSV(r io.Reader) ([]string, error) {
 	cr := csv.NewReader(r)
@@ -152,21 +161,143 @@ func extractCSV(r io.Reader) ([]string, error) {
 	return out, nil
 }
 
-// extractPDF reads the whole file into memory (pdf.NewReader needs an
-// io.ReaderAt) and pulls the document's text page by page, then splits it
-// the same way as a text file. This scales with files.MaxFileSize: the
-// worker holds the source bytes, the extracted text, and (in split.go) the
-// result zip in memory at once, so a large upload means real peak RAM in
-// this container.
-func extractPDF(r io.Reader) ([]string, error) {
+// blockTags are the HTML elements that end a line of text: whatever follows
+// them starts a new block, which is what lets the Markdown segmenter see
+// paragraph boundaries in a page that has no blank lines at all.
+var blockTags = map[string]bool{
+	"p": true, "div": true, "section": true, "article": true, "main": true,
+	"header": true, "footer": true, "aside": true, "nav": true,
+	"ul": true, "ol": true, "li": true, "dl": true, "dt": true, "dd": true,
+	"table": true, "tr": true, "blockquote": true, "pre": true, "hr": true,
+	"br": true, "figure": true, "figcaption": true,
+}
+
+// droppedTags hold content that is markup machinery rather than document
+// text; their entire subtree is skipped.
+var droppedTags = map[string]bool{
+	"script": true, "style": true, "noscript": true, "template": true,
+	"svg": true, "head": true,
+}
+
+// htmlToText renders an HTML document as Markdown-ish plain text: h1-h6
+// become ATX headings and block elements become blank-line-separated
+// paragraphs, so the same heading-based segmentation used for Markdown
+// applies unchanged. It is deliberately not a full HTML-to-Markdown
+// converter - the pipeline needs the document's *structure* (where the
+// sections start) and its text, not faithful inline formatting.
+func htmlToText(r io.Reader) (string, error) {
+	z := html.NewTokenizer(r)
+
+	var b strings.Builder
+	var skipping string // tag whose subtree is being dropped, "" when none
+	headingLevel := 0
+
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			if err := z.Err(); err != io.EOF {
+				return "", fmt.Errorf("read html: %w", err)
+			}
+			return normalizeBlankLines(b.String()), nil
+
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, _ := z.TagName()
+			tag := string(name)
+
+			if skipping != "" {
+				continue
+			}
+			if droppedTags[tag] {
+				skipping = tag
+				continue
+			}
+
+			if level := headingTagLevel(tag); level > 0 {
+				b.WriteString("\n\n" + strings.Repeat("#", level) + " ")
+				headingLevel = level
+				continue
+			}
+			if blockTags[tag] {
+				b.WriteString("\n\n")
+			}
+
+		case html.EndTagToken:
+			name, _ := z.TagName()
+			tag := string(name)
+
+			if skipping != "" {
+				if skipping == tag {
+					skipping = ""
+				}
+				continue
+			}
+
+			if headingTagLevel(tag) > 0 {
+				headingLevel = 0
+				b.WriteString("\n\n")
+				continue
+			}
+			if blockTags[tag] {
+				b.WriteString("\n\n")
+			}
+
+		case html.TextToken:
+			if skipping != "" {
+				continue
+			}
+
+			// Collapsing runs of whitespace mirrors how a browser renders
+			// HTML, and keeps a heading on one line no matter how the source
+			// was indented.
+			text := strings.Join(strings.Fields(string(z.Text())), " ")
+			if text == "" {
+				continue
+			}
+			if headingLevel == 0 && needsSpace(b.String()) {
+				b.WriteString(" ")
+			}
+			b.WriteString(text)
+		}
+	}
+}
+
+func headingTagLevel(tag string) int {
+	if len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' {
+		return int(tag[1] - '0')
+	}
+	return 0
+}
+
+// needsSpace reports whether inline text should be separated from what was
+// written before it, so two adjacent inline elements don't run together.
+func needsSpace(written string) bool {
+	if written == "" {
+		return false
+	}
+	last := written[len(written)-1]
+	return last != ' ' && last != '\n'
+}
+
+var manyBlankLinesRE = regexp.MustCompile(`\n{3,}`)
+
+func normalizeBlankLines(s string) string {
+	return strings.TrimSpace(manyBlankLinesRE.ReplaceAllString(strings.ReplaceAll(s, "\r\n", "\n"), "\n\n"))
+}
+
+// extractPDFText reads the whole file into memory (pdf.NewReader needs an
+// io.ReaderAt) and pulls the document's text page by page. This scales with
+// files.MaxFileSize: the worker holds the source bytes, the extracted text,
+// and (in pipeline.go) the packaged bundle in memory at once, so a large
+// upload means real peak RAM in this container.
+func extractPDFText(r io.Reader) (string, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
-		return nil, fmt.Errorf("read pdf: %w", err)
+		return "", fmt.Errorf("read pdf: %w", err)
 	}
 
 	doc, err := pdf.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return nil, fmt.Errorf("open pdf: %w", err)
+		return "", fmt.Errorf("open pdf: %w", err)
 	}
 
 	var buf strings.Builder
@@ -174,7 +305,7 @@ func extractPDF(r io.Reader) ([]string, error) {
 		writePageText(&buf, doc.Page(i).Content().Text)
 	}
 
-	return splitParagraphs(buf.String()), nil
+	return buf.String(), nil
 }
 
 // writePageText reconstructs readable text from chars, the page's
@@ -200,8 +331,7 @@ func extractPDF(r io.Reader) ([]string, error) {
 // it," and on a real academic PDF that turned ~2,600 reasonable chunks
 // into ~7,000 tiny ones (many just a stray 1-byte marker). Only a
 // genuine page boundary is treated as a paragraph break; everything
-// within a page beyond that relies on splitOversizedBlock (see
-// splitParagraphs) to keep chunks a reasonable size.
+// within a page beyond that relies on the segmenter's fallbacks.
 func writePageText(buf *strings.Builder, chars []pdf.Text) {
 	var prev pdf.Text
 	havePrev := false

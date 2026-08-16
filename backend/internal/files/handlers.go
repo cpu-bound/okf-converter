@@ -22,19 +22,30 @@ const (
 	resultURLExpiry = 24 * time.Hour
 )
 
-// EnqueueConversion, if set, is called to push a conversion job for a file -
-// on first upload confirmation (retryOf nil) and on retry (retryOf pointing
-// at the job attempt being retried). It's the seam the conversion pipeline
-// hooks into (wired in main.go). Kept as a plain func field rather than a
-// required constructor arg so this package has no compile-time dependency
-// on internal/convert.
+// Handlers serves the upload side of the API. Both func fields are seams the
+// conversion pipeline hooks into (wired in main.go), kept as plain fields
+// rather than required constructor arguments so this package has no
+// compile-time dependency on internal/convert.
 type Handlers struct {
 	repo    FileRepository
 	outputs OutputRepository
 	jobs    JobRepository
 	storage storage.Storage
 
+	// EnqueueConversion is called to push a conversion job for a file - on
+	// first upload confirmation (retryOf nil) and on retry (retryOf pointing
+	// at the job attempt being retried).
 	EnqueueConversion func(ctx context.Context, file File, objectKey string, retryOf *string)
+
+	// SupportedFormat reports whether the pipeline can convert a document,
+	// so an unconvertible upload is refused before a presigned URL is even
+	// issued rather than being accepted and failing in a worker later. When
+	// nil, every format is accepted.
+	SupportedFormat func(contentType, filename string) bool
+
+	// SupportedFormatMessage is shown to the user when SupportedFormat says
+	// no.
+	SupportedFormatMessage string
 }
 
 func NewHandlers(repo FileRepository, outputs OutputRepository, jobs JobRepository, store storage.Storage) *Handlers {
@@ -63,6 +74,18 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 	size := *body.Size
 	if size <= 0 || size > MaxFileSize {
 		httpx.Error(w, http.StatusBadRequest, "File must be between 1 byte and 500 MB.")
+		return
+	}
+
+	// Documents arrive from an untrusted client, so the format is checked on
+	// the way in: an upload the pipeline could never convert is refused here
+	// instead of consuming storage and a worker before failing.
+	if h.SupportedFormat != nil && !h.SupportedFormat(body.ContentType, body.Filename) {
+		message := h.SupportedFormatMessage
+		if message == "" {
+			message = "Unsupported file format."
+		}
+		httpx.Error(w, http.StatusUnsupportedMediaType, message)
 		return
 	}
 

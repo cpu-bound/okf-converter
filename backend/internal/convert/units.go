@@ -14,34 +14,81 @@ import (
 const maxTitleRunes = 70
 
 // extractUnits turns the source document into the ordered logical units the
-// bundle is built from, recording what it found into log so log.md can show
-// how the document was read.
+// bundle is built from, recording what it found into log so log.md shows how
+// the document was read.
 //
-// Unit detection currently reuses the format-specific block splitting in
-// extract.go (blank-line paragraphs for text and PDF, one row per record for
-// CSV) and derives each unit's title from its own first line. Splitting by
-// document structure - headings - is the next step and belongs here; nothing
-// downstream needs to change when it lands, since everything past this
-// function only sees []bundle.Unit.
+// Each format is reduced to something the segmenter understands rather than
+// getting its own splitting rules: Markdown is already there, HTML is
+// rendered as Markdown-ish text (its <h1>-<h6> become headings), and PDF
+// text is treated as plain text. Only CSV is different, because its logical
+// units are its rows and no amount of heading detection would find them.
 func extractUnits(contentType, filename string, r io.Reader, log *bundle.Log) ([]bundle.Unit, error) {
 	format := detectFormat(contentType, filename)
 	log.Step("formato de origen detectado: %s", formatName(format))
 
-	blocks, err := extractParagraphs(contentType, filename, r)
+	var (
+		text  string
+		style headingStyle
+		err   error
+	)
+
+	switch format {
+	case formatMarkdown:
+		text, err = readText(r)
+		style = styleMarkup
+
+	case formatHTML:
+		text, err = htmlToText(r)
+		style = styleMarkup
+
+	case formatText:
+		text, err = readText(r)
+		style = stylePlain
+
+	case formatPDF:
+		text, err = extractPDFText(r)
+		style = stylePlain
+
+	case formatCSV:
+		return csvUnits(r, log)
+
+	default:
+		return nil, fmt.Errorf("unsupported content type %q", contentType)
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	if len(blocks) == 0 {
+	units := segmentText(text, style, log)
+	if len(units) == 0 {
 		return nil, fmt.Errorf("no extractable text content")
 	}
 
-	units := make([]bundle.Unit, 0, len(blocks))
-	for i, block := range blocks {
+	log.Step("%d unidad(es) lógica(s) detectada(s) en el documento", len(units))
+	return units, nil
+}
+
+// csvUnits makes one unit per row. The header row, when there is one, is not
+// treated specially: it is the first row of the document and stays in that
+// position, which keeps the bundle's order faithful to the source.
+func csvUnits(r io.Reader, log *bundle.Log) ([]bundle.Unit, error) {
+	rows, err := extractCSV(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("no extractable text content")
+	}
+
+	log.Step("estructura tabular: cada fila del CSV es una unidad")
+
+	units := make([]bundle.Unit, 0, len(rows))
+	for i, row := range rows {
 		units = append(units, bundle.Unit{
-			Title:  titleFromBody(block),
-			Body:   block,
-			Origin: fmt.Sprintf("bloque %d de %d", i+1, len(blocks)),
+			Title:  titleFromBody(row),
+			Body:   row,
+			Origin: fmt.Sprintf("fila %d de %d", i+1, len(rows)),
 		})
 	}
 
@@ -81,7 +128,7 @@ func truncateRunes(s string, n int) string {
 	}
 
 	cut := string(runes[:n])
-	if idx := strings.LastIndexAny(cut, " \t"); idx > n/2 {
+	if idx := strings.LastIndexAny(cut, " \t"); idx > len(cut)/2 {
 		cut = cut[:idx]
 	}
 
@@ -92,6 +139,10 @@ func formatName(f sourceFormat) string {
 	switch f {
 	case formatText:
 		return "texto plano"
+	case formatMarkdown:
+		return "Markdown"
+	case formatHTML:
+		return "HTML"
 	case formatCSV:
 		return "CSV"
 	case formatPDF:

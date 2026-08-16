@@ -252,6 +252,32 @@ func TestUploadURLHandler(t *testing.T) {
 	}
 }
 
+// A document the pipeline could never convert is refused at reception,
+// before a presigned URL is issued - not accepted and failed in a worker
+// minutes later.
+func TestUploadURLRejectsUnsupportedFormat(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+
+	repo := newFakeFileRepository()
+	store := &fakeStorage{presignedOK: "https://minio.example/presigned"}
+	h := NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), store)
+	h.SupportedFormat = func(contentType, filename string) bool { return contentType == "text/markdown" }
+	h.SupportedFormatMessage = "Formato no soportado."
+
+	req := requestAsUser(http.MethodPost, "/api/files/upload-url",
+		`{"filename":"archive.zip","contentType":"application/zip","size":1024}`, user)
+	rec := httptest.NewRecorder()
+
+	h.UploadURL(rec, req)
+
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusUnsupportedMediaType, rec.Body.String())
+	}
+	if len(repo.files) != 0 {
+		t.Errorf("a file record was created for a rejected upload: %v", repo.files)
+	}
+}
+
 func TestConfirmHandler(t *testing.T) {
 	user := auth.User{ID: "user-1"}
 

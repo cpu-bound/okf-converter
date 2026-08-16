@@ -75,6 +75,8 @@ func run() error {
 	authHandlers := auth.NewHandlers(auth.NewPgUserRepository(dbPool), cfg.JWTSecret, cfg.IsProduction())
 
 	fileHandlers := files.NewHandlers(fileRepo, outputRepo, jobRepo, store)
+	fileHandlers.SupportedFormat = convert.Supports
+	fileHandlers.SupportedFormatMessage = "Formato no soportado. Se admiten documentos en " + convert.SupportedFormatList() + "."
 	fileHandlers.EnqueueConversion = func(ctx context.Context, file files.File, objectKey string, retryOf *string) {
 		convertJob, err := jobRepo.Create(ctx, file.ID, retryOf)
 		if err != nil {
