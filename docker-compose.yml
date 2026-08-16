@@ -1,5 +1,9 @@
 name: okf-converter
 
+# Toda la configuración (credenciales, puertos, endpoints) vive en el archivo
+# `.env` de la raíz, que Docker Compose carga automáticamente. Este archivo
+# solo describe el cableado entre servicios.
+
 services:
 
   frontend:
@@ -10,7 +14,7 @@ services:
     container_name: okf-converter-frontend
 
     ports:
-      - "8080:80"
+      - "${FRONTEND_PORT}:80"
 
     depends_on:
       api:
@@ -27,28 +31,31 @@ services:
     container_name: okf-converter-api
 
     environment:
-      NODE_ENV: production
+      APP_ENV: ${APP_ENV}
+
+      # Puerto interno del contenedor. No se publica al host: el frontend
+      # hace de proxy inverso hacia http://api:3000 (ver frontend/nginx.conf).
       PORT: 3000
 
-      DATABASE_URL: postgresql://auth_user:auth_password@db:5432/auth_db
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
 
-      RABBITMQ_URL: amqp://okf:okf_password@rabbitmq:5672/
+      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
 
-      JWT_SECRET: change-this-to-a-long-random-secret
+      JWT_SECRET: ${JWT_SECRET}
 
-      FRONTEND_URL: http://localhost:8080
+      FRONTEND_URL: ${FRONTEND_URL}
 
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadminpassword
-      MINIO_BUCKET: user-files
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
 
       # Used only for signing presigned URLs, which the browser follows
       # directly - must be reachable from outside the Docker network.
-      MINIO_PUBLIC_ENDPOINT: localhost
-      MINIO_PUBLIC_PORT: 9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+      MINIO_PUBLIC_PORT: ${MINIO_PUBLIC_PORT}
       MINIO_PUBLIC_USE_SSL: "false"
 
     depends_on:
@@ -70,9 +77,9 @@ services:
     container_name: okf-converter-db
 
     environment:
-      POSTGRES_DB: auth_db
-      POSTGRES_USER: auth_user
-      POSTGRES_PASSWORD: auth_password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -81,7 +88,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - pg_isready -h 127.0.0.1 -p 5432 -U auth_user -d auth_db
+        - pg_isready -h 127.0.0.1 -p 5432 -U ${POSTGRES_USER} -d ${POSTGRES_DB}
 
       interval: 5s
       timeout: 5s
@@ -102,13 +109,13 @@ services:
       - ":9001"
 
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadminpassword
-      MINIO_API_CORS_ALLOW_ORIGIN: http://localhost:8080
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${FRONTEND_URL}
 
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_PUBLIC_PORT}:9000"
+      - "${MINIO_CONSOLE_PORT}:9001"
 
     volumes:
       - minio_data:/data
@@ -122,12 +129,12 @@ services:
     container_name: okf-converter-rabbitmq
 
     environment:
-      RABBITMQ_DEFAULT_USER: okf
-      RABBITMQ_DEFAULT_PASS: okf_password
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
 
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${RABBITMQ_AMQP_PORT}:5672"
+      - "${RABBITMQ_UI_PORT}:15672"
 
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -156,7 +163,7 @@ services:
       - prometheus_data:/prometheus
 
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT}:9090"
 
     healthcheck:
       test:
@@ -183,8 +190,8 @@ services:
     container_name: okf-converter-grafana
 
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
 
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -192,7 +199,7 @@ services:
       - grafana_data:/var/lib/grafana
 
     ports:
-      - "3001:3000"
+      - "${GRAFANA_PORT}:3000"
 
     depends_on:
       prometheus:

@@ -42,3 +42,12 @@ __screenshots__/
 # System files
 .DS_Store
 Thumbs.db
+
+# Configuración
+#
+# `.env` SÍ se versiona: contiene únicamente valores de desarrollo local y es
+# lo que permite desplegar con un solo comando desde un clon limpio. Las
+# sobrescrituras locales o de despliegue real van en `.env.local`, que Docker
+# Compose no carga por defecto (usar `--env-file .env.local`).
+.env.local
+.env.*.local

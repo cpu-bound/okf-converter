@@ -9,3 +9,4 @@ README.md
 *.log
 .env
 .env.*
+Makefile

@@ -103,24 +103,71 @@ flowchart TD
 
 ## Ejecutar la aplicación
 
-Requiere Docker y Docker Compose.
+Requiere Docker y Docker Compose. Todo el stack se levanta con un solo
+comando:
 
 ```bash
 docker compose up --build
 ```
 
+o, equivalentemente, `make up` (ver [Comandos make](#comandos-make)).
+
 Una vez en ejecución:
 
 - App: http://localhost:8080 (crear una cuenta y luego iniciar sesión para acceder a `/dashboard`)
-- API: http://localhost:3000
 - Consola de MinIO: http://localhost:9001 (`minioadmin` / `minioadminpassword`)
 - Panel de administración de RabbitMQ: http://localhost:15672 (`okf` / `okf_password`)
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3001 (`admin` / `admin`)
 
-`docker-compose.yml` define credenciales y secretos por defecto solo para
-desarrollo local — cambiar `JWT_SECRET` y las demás contraseñas antes de
-desplegar en un entorno real.
+La API no publica ningún puerto en el host: se accede a través del proxy
+inverso del frontend, en http://localhost:8080/api/.
+
+## Configuración
+
+Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
+[`.env`](.env) de la raíz, fuera del código y fuera de `docker-compose.yml`,
+que solo describe el cableado entre servicios e interpola esas variables.
+`make urls` imprime las direcciones y credenciales realmente en uso, y
+`make config` muestra el compose ya resuelto.
+
+`.env` está versionado a propósito: contiene únicamente valores de
+desarrollo local, y es lo que permite que `docker compose up` funcione desde
+un clon limpio sin pasos previos. Para un despliegue real:
+
+```bash
+cp .env .env.local          # .env.local está en .gitignore
+# editar JWT_SECRET y todas las contraseñas, y APP_ENV=production
+docker compose --env-file .env.local up --build
+```
+
+`APP_ENV=production` activa el flag `Secure` de la cookie de sesión, que
+exige servir la aplicación por HTTPS.
+
+El backend en Go lee estas variables desde el entorno del proceso; ninguna
+tiene valor de configuración escrito en el código. La lista completa, con sus
+valores por defecto, está en `backend/internal/config/config.go`.
+
+## Comandos make
+
+`make help` lista todos los targets. Los más usados:
+
+| Comando | Qué hace |
+| --- | --- |
+| `make up` | Levanta todo el stack en segundo plano |
+| `make up-fg` | Igual, en primer plano y con logs |
+| `make fresh` | Borra volúmenes y levanta el stack desde cero |
+| `make down` / `make reset` | Detiene los contenedores / además borra los volúmenes |
+| `make logs` / `make logs-one S=api` | Logs de todo / de un servicio |
+| `make scale SERVICE=worker N=3` | Escala un servicio |
+| `make queue` | Estado de la cola de conversión en RabbitMQ |
+| `make psql` | Consola de PostgreSQL |
+| `make urls` / `make config` | URLs y credenciales en uso / compose resuelto |
+| `make test` | Pruebas de backend y frontend |
+| `make check` | `go vet` + compilación + todas las pruebas |
+
+Los targets de pruebas y compilación corren dentro de contenedores, así que
+no hace falta tener Go ni Node instalados en la máquina.
 
 ## Estructura del proyecto
 

@@ -1,6 +1,7 @@
 // Package config loads and validates the process configuration from
-// environment variables. Variable names intentionally match docker-compose.yml
-// (and the previous Node config.ts) exactly so the compose file needs no changes.
+// environment variables. Every value comes from the environment - the actual
+// settings live in the repo-root .env that docker-compose.yml interpolates,
+// never in this code.
 package config
 
 import (
@@ -38,7 +39,8 @@ type Config struct {
 	Minio MinioConfig
 }
 
-// IsProduction reports whether the cookie Secure flag should be set.
+// IsProduction reports whether the cookie Secure flag should be set, i.e.
+// whether APP_ENV says this deployment is served over HTTPS.
 func (c Config) IsProduction() bool {
 	return c.Env == "production"
 }
@@ -91,7 +93,7 @@ func Load() (Config, error) {
 	minioUseSSL := boolEnv("MINIO_USE_SSL")
 
 	return Config{
-		Env:         os.Getenv("NODE_ENV"),
+		Env:         os.Getenv("APP_ENV"),
 		Port:        stringEnv("PORT", "3000"),
 		FrontendURL: stringEnv("FRONTEND_URL", "http://localhost:8080"),
 
