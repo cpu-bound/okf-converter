@@ -52,6 +52,16 @@ func (f *fakeFileRepository) FindForUser(ctx context.Context, id, userID string)
 	return rec, nil
 }
 
+func (f *fakeFileRepository) ListForUser(ctx context.Context, userID string) ([]File, error) {
+	files := []File{}
+	for id, owner := range f.owners {
+		if owner == userID {
+			files = append(files, f.files[id])
+		}
+	}
+	return files, nil
+}
+
 // setValidation records the verdict a conversion would have written, so the
 // handlers' explanations of an unpublished bundle can be exercised.
 func (f *fakeFileRepository) setValidation(id, verdict string) {
@@ -665,6 +675,42 @@ func TestOutputsRefusesUnpublishedBundles(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+}
+
+// The dashboard polls this, so it has to be scoped to the caller: another
+// user's uploads must not appear in it.
+func TestListHandlerReturnsOnlyTheCallersFiles(t *testing.T) {
+	repo := newFakeFileRepository()
+	mine, _ := repo.Create(context.Background(), "user-1", "user-1/a.pdf", "mio.pdf", "application/pdf", 10)
+	repo.Create(context.Background(), "user-2", "user-2/b.pdf", "ajeno.pdf", "application/pdf", 10)
+
+	h := NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), &fakeStorage{})
+
+	req := requestAsUser(http.MethodGet, "/api/files", "", auth.User{ID: "user-1"})
+	rec := httptest.NewRecorder()
+
+	h.List(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Files []File `json:"files"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(resp.Files) != 1 {
+		t.Fatalf("files = %+v, want only the caller's one file", resp.Files)
+	}
+	if resp.Files[0].ID != mine.ID {
+		t.Errorf("files[0].id = %q, want %q", resp.Files[0].ID, mine.ID)
+	}
+	if strings.Contains(rec.Body.String(), "ajeno.pdf") {
+		t.Error("another user's file leaked into the list")
 	}
 }
 

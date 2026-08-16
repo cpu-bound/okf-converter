@@ -421,68 +421,20 @@ input::placeholder {
 }
 
 .dashboard-content {
-  max-width: 640px;
+  max-width: 860px;
   margin: 0 auto;
-  padding: 64px 20px 0;
+  padding: 48px 20px 80px;
 }
 
-.welcome-card {
-  padding: 52px 40px;
-
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  background: var(--surface);
-
-  text-align: center;
-
-  box-shadow: 0 1px 2px rgba(20, 20, 15, 0.04);
-}
-
-.welcome-card h1 {
-  margin: 0 0 10px;
-  font-size: 30px;
-}
-
-.welcome-card > p {
-  margin: 0;
-  color: var(--graphite);
-  font-size: 14px;
-}
-
-.user-details {
-  max-width: 420px;
-  margin: 36px auto 0;
-  text-align: left;
-}
-
-.user-details-row {
+.nav-user {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 16px;
-
-  padding: 13px 2px;
-  border-bottom: 1px solid var(--rule);
 }
 
-.user-details-row:first-child {
-  border-top: 1px solid var(--rule);
-}
-
-.user-details-row dt {
-  margin: 0;
+.nav-user-name {
   color: var(--graphite);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-}
-
-.user-details-row dd {
-  margin: 0;
-  font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--ink);
-  text-align: right;
-  word-break: break-word;
 }
 
 @media (max-width: 600px) {
@@ -496,18 +448,17 @@ input::placeholder {
   }
 
   .dashboard-content {
-    padding-top: 40px;
+    padding-top: 32px;
   }
 
-  .welcome-card {
-    padding: 40px 22px;
+  .nav-user-name {
+    display: none;
   }
 }
 
 .upload-section {
-  max-width: 640px;
-  margin: 24px auto 64px;
-  padding: 36px 40px;
+  margin: 0 0 28px;
+  padding: 32px 36px;
 
   background: var(--surface);
 
@@ -524,9 +475,12 @@ input::placeholder {
   font-size: 20px;
 }
 
-.upload-section > p {
+.section-hint {
+  margin: 0 0 20px;
+  max-width: 60ch;
   color: var(--graphite);
   font-size: 14px;
+  line-height: 1.55;
 }
 
 .selected-file {
@@ -544,7 +498,10 @@ input::placeholder {
   font-size: 14px;
 }
 
-.selected-file span:first-child {
+.selected-file-name {
+  flex: 1;
+  min-width: 0;
+
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -552,7 +509,7 @@ input::placeholder {
   font-weight: 500;
 }
 
-.selected-file span:last-child {
+.selected-file-size {
   flex-shrink: 0;
   color: var(--graphite);
   font-family: var(--font-mono);
@@ -597,83 +554,321 @@ input::placeholder {
   text-align: right;
 }
 
-.result-panel {
-  margin-top: 16px;
-}
+/* Lista de archivos */
 
-.result-panel-label {
-  margin: 0 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink);
-}
-
-.result-url {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-
-  margin-bottom: 14px;
-}
-
-.result-url-input {
-  flex: 1;
-  min-width: 0;
-
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--graphite);
-  background: var(--rule-soft);
-  border-color: var(--rule);
-
-  text-overflow: ellipsis;
-}
-
-.copy-button {
-  flex-shrink: 0;
-  height: 46px;
-  padding: 0 18px;
-
-  border: 1px solid var(--rule);
-  border-radius: 6px;
+.files-section {
+  padding: 32px 36px;
 
   background: var(--surface);
-  color: var(--ink);
 
-  font-size: 13px;
-  font-weight: 600;
-
-  transition:
-    border-color 0.15s,
-    background 0.15s;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(20, 20, 15, 0.04);
 }
 
-.copy-button:hover {
-  border-color: var(--ink);
-  background: var(--rule-soft);
+.files-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+
+  margin-bottom: 4px;
 }
 
-.retry-link {
-  display: block;
-  width: 100%;
-  margin-top: 12px;
-  padding: 6px;
+.files-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.files-header-actions {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.polling-indicator {
+  color: var(--graphite);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.link-button {
+  padding: 0;
 
   border: 0;
   background: transparent;
 
-  color: var(--graphite);
+  color: var(--accent);
   font-size: 13px;
-  text-align: center;
   text-decoration: underline;
 }
 
-.retry-link:hover {
-  color: var(--accent);
-}
-
-.retry-link:disabled {
+.link-button:disabled {
   color: #a9a79c;
   cursor: default;
   text-decoration: none;
+}
+
+.file-list {
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-list-empty {
+  padding: 28px 2px;
+
+  border-top: 1px solid var(--rule);
+
+  color: var(--graphite);
+  font-size: 14px;
+}
+
+.file-row {
+  padding: 16px 2px;
+  border-top: 1px solid var(--rule);
+}
+
+.file-row:last-child {
+  border-bottom: 1px solid var(--rule);
+}
+
+.file-row-main {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.file-row-identity {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.file-name {
+  display: block;
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.file-meta {
+  display: block;
+  margin-top: 3px;
+
+  color: var(--graphite);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.file-row-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.file-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+
+/* Estado del archivo y veredicto de la validación */
+
+.status-chip,
+.verdict-chip {
+  display: inline-block;
+  padding: 3px 10px;
+
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+
+  background: var(--rule-soft);
+  color: var(--graphite);
+
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.status-converting,
+.status-ready {
+  border-color: #d8cfa8;
+  background: #fbf5e2;
+  color: #7a6420;
+}
+
+.status-converted {
+  border-color: #bfd9cb;
+  background: var(--accent-soft);
+  color: #1f5c40;
+}
+
+.status-failed {
+  border-color: #e6c2be;
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.verdict-valid {
+  border-color: #bfd9cb;
+  background: var(--accent-soft);
+  color: #1f5c40;
+}
+
+.verdict-valid_with_warnings {
+  border-color: #d8cfa8;
+  background: #fbf5e2;
+  color: #7a6420;
+}
+
+.verdict-invalid {
+  border-color: #e6c2be;
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.primary-button.small {
+  display: inline-block;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 8px 16px;
+
+  font-size: 13px;
+  text-decoration: none;
+}
+
+/* Detalle de la validación */
+
+.file-row-detail {
+  margin-top: 16px;
+  padding: 16px 18px;
+
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--paper);
+
+  font-size: 13px;
+}
+
+.verdict-summary {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+
+  color: var(--graphite);
+}
+
+.file-row-detail h4 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+}
+
+.check-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+
+  padding: 7px 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+
+.check:last-child {
+  border-bottom: 0;
+}
+
+.check-severity,
+.check-scope {
+  flex-shrink: 0;
+
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.check-scope {
+  color: var(--graphite);
+}
+
+.severity-error {
+  color: var(--error);
+  font-weight: 700;
+}
+
+.severity-warning {
+  color: #7a6420;
+  font-weight: 700;
+}
+
+.check-outcome {
+  flex-shrink: 0;
+  width: 1em;
+  color: var(--error);
+  font-weight: 700;
+}
+
+.check.passed .check-outcome {
+  color: var(--accent);
+}
+
+.check-rule {
+  flex: 1 1 220px;
+}
+
+.check-details {
+  flex-basis: 100%;
+  margin: 4px 0 0;
+  padding-left: 20px;
+
+  color: var(--graphite);
+  font-size: 12px;
+}
+
+.check-clean {
+  margin: 14px 0 0;
+  color: var(--graphite);
+}
+
+.all-checks {
+  margin-top: 16px;
+}
+
+.all-checks summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.alert.warning {
+  color: #7a6420;
+  background: #fbf5e2;
+  border-left-color: #c8a94a;
+}
+
+@media (max-width: 600px) {
+  .upload-section,
+  .files-section {
+    padding: 24px 20px;
+  }
+
+  .file-row-actions {
+    margin-left: 0;
+    width: 100%;
+  }
 }

@@ -147,6 +147,38 @@ Los archivos individuales del bundle (`GET /api/files/{id}/outputs`) están
 tras la misma puerta: un bundle que no se publicó tampoco se ofrece por
 partes.
 
+## El dashboard
+
+Tras iniciar sesión, el usuario ve **únicamente sus propios archivos**: el
+listado se acota por `user_id` en la consulta, no filtrando después, así que
+un error en un handler no puede ensancharlo a los archivos de otro.
+
+El seguimiento del estado es por sondeo (`GET /api/files`), una sola petición
+por vuelta para todos los archivos que se estén siguiendo. Dos detalles
+deliberados:
+
+- **Solo se sondea si hay algo que esperar.** Un archivo en `ready` o
+  `converting` está esperando a un worker; uno en `pending` es una subida que
+  nunca se confirmó y que ningún worker va a tomar, así que no cuenta.
+- **El sondeo se rinde a los 10 minutos**, para que un worker caído no deje
+  una pestaña preguntando indefinidamente. Queda el botón «Actualizar».
+
+El botón de descarga solo se habilita con el bundle publicado. El veredicto de
+la validación se muestra junto al estado, y al abrirlo se pide el informe
+regla por regla a `GET /api/files/{id}` —que no viaja en el listado
+justamente porque el listado se sondea cada pocos segundos.
+
+El selector de archivo lleva un `accept` con los formatos soportados, así que
+el rechazo por formato ocurre antes incluso de la petición.
+
+| Estado | Etiqueta |
+| --- | --- |
+| `pending` | Subida sin confirmar |
+| `ready` | En cola |
+| `converting` | Convirtiendo |
+| `converted` | Bundle publicado |
+| `failed` | Falló (con botón de reintento) |
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -267,12 +299,14 @@ flowchart TD
     W1 --> X{"¿Clasificación?"}
     X -- "inválido" --> S
     X -- "válido / válido con advertencias" --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
-    O --> P["Se empaqueta el bundle en un .zip\ny se guarda en la clave ya prefirmada"]
+    O --> P["Se empaqueta el bundle en un .zip\ny se guarda en su clave determinista"]
     P --> Q{"¿La conversión tuvo éxito?"}
     Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
     Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
-    R --> U["El usuario descarga por la API\nGET /api/files/:id/bundle"]
-    U --> U1{"¿Es el dueño\ny está publicado?"}
+    R --> U["El frontend sondea GET /api/files hasta que\nno queda nada en 'ready' ni 'converting',\ny habilita la descarga"]
+    U --> U0["El usuario descarga por la API\nGET /api/files/:id/bundle"]
+    U0 --> U1
+    U1{"¿Es el dueño\ny está publicado?"}
     U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
     U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
     S --> T["El usuario puede pedir un reintento\nPOST /api/files/:id/retry"]

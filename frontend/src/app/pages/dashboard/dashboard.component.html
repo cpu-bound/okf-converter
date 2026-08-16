@@ -6,132 +6,231 @@
       <span class="nav-brand-label">Conversor</span>
     </div>
 
-    <button class="logout-button" (click)="auth.logout()">
-      Cerrar sesión
-    </button>
+    <div class="nav-user">
+      <span class="nav-user-name">{{ auth.user()?.name }}</span>
+      <button class="logout-button" (click)="auth.logout()">
+        Cerrar sesión
+      </button>
+    </div>
   </nav>
 
   <main class="dashboard-content">
-    <div class="welcome-card">
 
-      <div class="success-icon">✓</div>
+    <section class="upload-section">
+      <h2>Subir un documento</h2>
 
-      <h1>¡Has iniciado sesión!</h1>
-
-      <p>
-        Bienvenido,
-        <strong>{{ auth.user()?.name }}</strong>.
+      <p class="section-hint">
+        Se admiten documentos en Markdown, HTML, texto plano, CSV o PDF.
+        Cada uno se convierte en un bundle OKF con su índice, su bitácora y
+        un documento por unidad de conocimiento.
       </p>
 
-      <dl class="user-details">
-        <div class="user-details-row">
-          <dt>Nombre</dt>
-          <dd>{{ auth.user()?.name }}</dd>
-        </div>
-
-        <div class="user-details-row">
-          <dt>Correo electrónico</dt>
-          <dd>{{ auth.user()?.email }}</dd>
-        </div>
-      </dl>
-
-    </div>
-  </main>
-
-  <div class="upload-section">
-
-  <h2>Tus archivos</h2>
-
-  <p>
-    Sube un archivo que quieras convertir a OKF.
-  </p>
-
-  <input
-  #fileInput
-  type="file"
-  (change)="onFileSelected($event)"
-  hidden
-/>
-
-<button
-  type="button"
-  class="primary-button"
-  [disabled]="uploading()"
-  (click)="fileInput.click()"
->
-  Elegir archivo
-</button>
-
-@if (selectedFile(); as file) {
-  <div class="selected-file">
-    <span>{{ file.name }}</span>
-    <span>{{ formatFileSize(file.size) }}</span>
-  </div>
-
-  <button
-    type="button"
-    class="primary-button"
-    [disabled]="uploading()"
-    (click)="uploadFile(file)"
-  >
-    {{ uploading() ? 'Subiendo...' : 'Subir archivo' }}
-  </button>
-}
-
-@if (uploading()) {
-  <div class="progress-container">
-    <div class="progress-bar" [style.width.%]="uploadProgress()"></div>
-  </div>
-  <p class="progress-label">{{ uploadProgress() }}%</p>
-}
-
-@if (uploadComplete()) {
-  <div class="alert success">
-    Archivo subido correctamente.
-  </div>
-}
-
-@if (uploadError()) {
-  <div class="alert error">
-    {{ uploadError() }}
-  </div>
-}
-
-@if (bundleUrl(); as url) {
-  <div class="result-panel">
-    <p class="result-panel-label">
-      Cuando la conversión termine y el bundle pase la validación, podrás
-      descargarlo aquí:
-    </p>
-
-    <div class="result-url">
       <input
-        type="text"
-        class="result-url-input"
-        [value]="url"
-        readonly
-        (click)="selectUrlInput($event)"
+        #fileInput
+        type="file"
+        [accept]="acceptedUploads"
+        (change)="onFileSelected($event)"
+        hidden
       />
 
-      <button type="button" class="copy-button" (click)="copyBundleUrl()">
-        {{ copied() ? '¡Copiado!' : 'Copiar' }}
+      <button
+        type="button"
+        class="primary-button"
+        [disabled]="uploading()"
+        (click)="fileInput.click()"
+      >
+        Elegir archivo
       </button>
-    </div>
 
-    <a class="primary-button" [href]="url" target="_blank" rel="noopener noreferrer">
-      Descargar bundle
-    </a>
+      @if (selectedFile(); as file) {
+        <div class="selected-file">
+          <span class="selected-file-name">{{ file.name }}</span>
+          <span class="selected-file-size">{{ formatFileSize(file.size) }}</span>
 
-    <button
-      type="button"
-      class="retry-link"
-      [disabled]="retrying()"
-      (click)="retryConversion()"
-    >
-      {{ retrying() ? 'Reintentando...' : "¿La descarga todavía no funciona? Reintentar conversión" }}
-    </button>
-  </div>
-}
+          @if (!uploading()) {
+            <button type="button" class="link-button" (click)="clearSelection()">
+              Quitar
+            </button>
+          }
+        </div>
 
-</div>
+        <button
+          type="button"
+          class="primary-button"
+          [disabled]="uploading()"
+          (click)="uploadFile(file)"
+        >
+          {{ uploading() ? 'Subiendo...' : 'Subir y convertir' }}
+        </button>
+      }
+
+      @if (uploading()) {
+        <div class="progress-container">
+          <div class="progress-bar" [style.width.%]="uploadProgress()"></div>
+        </div>
+        <p class="progress-label">{{ uploadProgress() }}%</p>
+      }
+
+      @if (uploadError()) {
+        <div class="alert error">{{ uploadError() }}</div>
+      }
+    </section>
+
+    <section class="files-section">
+      <div class="files-header">
+        <h2>Tus archivos</h2>
+
+        <div class="files-header-actions">
+          @if (polling()) {
+            <span class="polling-indicator">Actualizando…</span>
+          }
+
+          <button type="button" class="link-button" (click)="refresh()">
+            Actualizar
+          </button>
+        </div>
+      </div>
+
+      @if (listError()) {
+        <div class="alert error">{{ listError() }}</div>
+      }
+
+      @if (pollingGaveUp()) {
+        <div class="alert warning">
+          Alguna conversión lleva demasiado tiempo sin terminar. Dejamos de
+          consultar automáticamente; pulsa «Actualizar» para volver a mirar.
+        </div>
+      }
+
+      <ul class="file-list">
+        @for (file of myFiles(); track file.id) {
+          <li class="file-row" [class.expanded]="expandedId() === file.id">
+
+            <div class="file-row-main">
+              <div class="file-row-identity">
+                <span class="file-name">{{ file.original_name }}</span>
+                <span class="file-meta">
+                  {{ formatFileSize(file.size) }} · {{ formatDate(file.created_at) }}
+                </span>
+              </div>
+
+              <div class="file-row-state">
+                <span class="status-chip" [class]="'status-' + file.status">
+                  {{ statusLabel(file.status) }}
+                </span>
+
+                @if (file.validation; as verdict) {
+                  <span class="verdict-chip" [class]="'verdict-' + verdict">
+                    {{ verdictLabel(verdict) }}
+                  </span>
+                }
+              </div>
+
+              <div class="file-row-actions">
+                @if (isDownloadable(file)) {
+                  <!-- No `download` attribute: it would override the file
+                       name with the last path segment ("bundle"). The API
+                       already sends Content-Disposition with the right one. -->
+                  <a class="primary-button small" [href]="bundleUrl(file)">
+                    Descargar bundle
+                  </a>
+                } @else {
+                  <button type="button" class="primary-button small" disabled>
+                    Descargar bundle
+                  </button>
+                }
+
+                @if (file.status === 'failed') {
+                  <button
+                    type="button"
+                    class="link-button"
+                    [disabled]="retryingId() === file.id"
+                    (click)="retryConversion(file)"
+                  >
+                    {{ retryingId() === file.id ? 'Reintentando…' : 'Reintentar' }}
+                  </button>
+                }
+
+                @if (file.validation) {
+                  <button
+                    type="button"
+                    class="link-button"
+                    (click)="toggleDetail(file)"
+                  >
+                    {{ expandedId() === file.id ? 'Ocultar validación' : 'Ver validación' }}
+                  </button>
+                }
+              </div>
+            </div>
+
+            @if (expandedId() === file.id) {
+              <div class="file-row-detail">
+                @if (reportFor(file); as report) {
+                  <div class="verdict-summary">
+                    <span>Validez de plataforma:
+                      <strong>{{ verdictLabel(report.platform) }}</strong></span>
+                    <span>Conformidad OKF:
+                      <strong>{{ verdictLabel(report.okf) }}</strong></span>
+                  </div>
+
+                  @if (failedChecks(report).length > 0) {
+                    <h4>Reglas no superadas</h4>
+                    <ul class="check-list">
+                      @for (check of failedChecks(report); track check.id) {
+                        <li class="check failed">
+                          <span class="check-severity" [class]="'severity-' + check.severity">
+                            {{ severityLabel(check.severity) }}
+                          </span>
+                          <span class="check-scope">{{ scopeLabel(check.scope) }}</span>
+                          <span class="check-rule">{{ check.rule }}</span>
+
+                          @if (check.details?.length) {
+                            <ul class="check-details">
+                              @for (detail of check.details; track detail) {
+                                <li>{{ detail }}</li>
+                              }
+                            </ul>
+                          }
+                        </li>
+                      }
+                    </ul>
+                  } @else {
+                    <p class="check-clean">
+                      El bundle superó las {{ report.checks.length }} reglas de
+                      validación.
+                    </p>
+                  }
+
+                  <details class="all-checks">
+                    <summary>Ver todas las reglas</summary>
+                    <ul class="check-list">
+                      @for (check of report.checks; track check.id) {
+                        <li class="check" [class.passed]="check.passed">
+                          <span class="check-outcome">
+                            {{ check.passed ? '✓' : '✕' }}
+                          </span>
+                          <span class="check-scope">{{ scopeLabel(check.scope) }}</span>
+                          <span class="check-rule">{{ check.rule }}</span>
+                        </li>
+                      }
+                    </ul>
+                  </details>
+                } @else if (reportError()) {
+                  <div class="alert error">{{ reportError() }}</div>
+                } @else {
+                  <p class="check-clean">Cargando el informe…</p>
+                }
+              </div>
+            }
+
+          </li>
+        } @empty {
+          <li class="file-list-empty">
+            Todavía no has subido ningún documento.
+          </li>
+        }
+      </ul>
+    </section>
+
+  </main>
 </div>

@@ -110,6 +110,7 @@ func run() error {
 	mux.HandleFunc("POST /api/auth/check-email", authHandlers.CheckEmail)
 	mux.HandleFunc("POST /api/auth/reset-password", authHandlers.ResetPassword)
 
+	mux.Handle("GET /api/files", requireAuth(http.HandlerFunc(fileHandlers.List)))
 	mux.Handle("POST /api/files/upload-url", requireAuth(http.HandlerFunc(fileHandlers.UploadURL)))
 	mux.Handle("POST /api/files/{id}/confirm", requireAuth(http.HandlerFunc(fileHandlers.Confirm)))
 	mux.Handle("GET /api/files/{id}", requireAuth(http.HandlerFunc(fileHandlers.Status)))

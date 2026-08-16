@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,7 +23,20 @@ type File struct {
 	// Validation classifies the bundle built for this file - valid,
 	// valid_with_warnings or invalid. Null until a conversion has produced a
 	// bundle to classify.
-	Validation *string `json:"validation,omitempty"`
+	Validation *string   `json:"validation,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// fileColumns is the projection every query returning a File selects, kept in
+// one place so the column list and the Scan below can't drift apart.
+const fileColumns = `id, original_name, content_type, size, status, validation, created_at`
+
+// scanFile reads a fileColumns row. row is *pgx.Row or pgx.Rows - both
+// satisfy this.
+func scanFile(row interface{ Scan(...any) error }) (File, error) {
+	var f File
+	err := row.Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation, &f.CreatedAt)
+	return f, err
 }
 
 // StatusConverted is the point at which a file's bundle has been validated
@@ -45,6 +59,7 @@ type FileRecord struct {
 	Size         int64
 	Status       string
 	Validation   *string
+	CreatedAt    time.Time
 	// ValidationReport is bundle.Report as stored, passed through to the
 	// client verbatim rather than decoded and re-encoded - this package has
 	// no reason to know the report's shape.
@@ -61,12 +76,15 @@ func (rec FileRecord) File() File {
 		Size:         rec.Size,
 		Status:       rec.Status,
 		Validation:   rec.Validation,
+		CreatedAt:    rec.CreatedAt,
 	}
 }
 
 type FileRepository interface {
 	Create(ctx context.Context, userID, objectKey, originalName, contentType string, size int64) (File, error)
 	FindForUser(ctx context.Context, id, userID string) (FileRecord, error)
+	// ListForUser returns the user's own files, newest first.
+	ListForUser(ctx context.Context, userID string) ([]File, error)
 	MarkReady(ctx context.Context, id string) (File, error)
 	// MarkRetrying atomically transitions a file from 'failed' to
 	// 'converting', so concurrent/duplicate retry requests only let one
@@ -87,14 +105,13 @@ func NewPgFileRepository(pool *pgxpool.Pool) *PgFileRepository {
 func (r *PgFileRepository) Create(ctx context.Context, userID, objectKey, originalName, contentType string, size int64) (File, error) {
 	var f File
 
-	err := r.pool.QueryRow(ctx,
+	f, err := scanFile(r.pool.QueryRow(ctx,
 		`
 		INSERT INTO files (user_id, object_key, original_name, content_type, size)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, original_name, content_type, size, status, validation
-		`,
+		RETURNING `+fileColumns,
 		userID, objectKey, originalName, contentType, size,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
+	))
 	if err != nil {
 		return File{}, fmt.Errorf("create file: %w", err)
 	}
@@ -102,17 +119,45 @@ func (r *PgFileRepository) Create(ctx context.Context, userID, objectKey, origin
 	return f, nil
 }
 
+// ListForUser returns every file the user has uploaded, newest first. It is
+// scoped by user_id in the query rather than filtered afterwards, so a bug in
+// a handler can never widen it to somebody else's files.
+func (r *PgFileRepository) ListForUser(ctx context.Context, userID string) ([]File, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+fileColumns+` FROM files WHERE user_id = $1 ORDER BY created_at DESC`,
+		userID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+	defer rows.Close()
+
+	files := []File{}
+	for rows.Next() {
+		f, err := scanFile(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan file: %w", err)
+		}
+		files = append(files, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+
+	return files, nil
+}
+
 func (r *PgFileRepository) FindForUser(ctx context.Context, id, userID string) (FileRecord, error) {
 	var rec FileRecord
 
 	err := r.pool.QueryRow(ctx,
 		`
-		SELECT id, object_key, original_name, content_type, size, status, validation, validation_report
+		SELECT id, object_key, original_name, content_type, size, status, validation, validation_report, created_at
 		FROM files WHERE id = $1 AND user_id = $2
 		`,
 		id, userID,
 	).Scan(&rec.ID, &rec.ObjectKey, &rec.OriginalName, &rec.ContentType, &rec.Size, &rec.Status,
-		&rec.Validation, &rec.ValidationReport)
+		&rec.Validation, &rec.ValidationReport, &rec.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return FileRecord{}, ErrNotFound
@@ -128,16 +173,13 @@ func (r *PgFileRepository) FindForUser(ctx context.Context, id, userID string) (
 // won=true), so a duplicate/concurrent retry call is always safe to make -
 // it just observes the state the winning call already produced.
 func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, bool, error) {
-	var f File
-
-	err := r.pool.QueryRow(ctx,
+	f, err := scanFile(r.pool.QueryRow(ctx,
 		`
 		UPDATE files SET status = 'converting'
 		WHERE id = $1 AND status = 'failed'
-		RETURNING id, original_name, content_type, size, status, validation
-		`,
+		RETURNING `+fileColumns,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
+	))
 	if err == nil {
 		return f, true, nil
 	}
@@ -145,10 +187,10 @@ func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, b
 		return File{}, false, fmt.Errorf("mark retrying: %w", err)
 	}
 
-	err = r.pool.QueryRow(ctx,
-		`SELECT id, original_name, content_type, size, status, validation FROM files WHERE id = $1`,
+	f, err = scanFile(r.pool.QueryRow(ctx,
+		`SELECT `+fileColumns+` FROM files WHERE id = $1`,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
+	))
 	if err != nil {
 		return File{}, false, fmt.Errorf("find file: %w", err)
 	}
@@ -157,15 +199,12 @@ func (r *PgFileRepository) MarkRetrying(ctx context.Context, id string) (File, b
 }
 
 func (r *PgFileRepository) MarkReady(ctx context.Context, id string) (File, error) {
-	var f File
-
-	err := r.pool.QueryRow(ctx,
+	f, err := scanFile(r.pool.QueryRow(ctx,
 		`
 		UPDATE files SET status = 'ready' WHERE id = $1
-		RETURNING id, original_name, content_type, size, status, validation
-		`,
+		RETURNING `+fileColumns,
 		id,
-	).Scan(&f.ID, &f.OriginalName, &f.ContentType, &f.Size, &f.Status, &f.Validation)
+	))
 	if err != nil {
 		return File{}, fmt.Errorf("mark file ready: %w", err)
 	}

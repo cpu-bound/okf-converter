@@ -159,6 +159,28 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"file": file})
 }
 
+// List returns the caller's own files, newest first. It is what the dashboard
+// polls: one request covers every file being tracked, rather than one request
+// per file.
+func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
+		return
+	}
+
+	files, err := h.repo.ListForUser(r.Context(), user.ID)
+	if err != nil {
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
+		return
+	}
+
+	// The verdict travels with the list, but not the rule-by-rule report:
+	// this response is polled, and the report is only needed when the user
+	// actually opens a file's detail (Status).
+	httpx.JSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
 // Status returns a file's current state - including the validation report of
 // the bundle built for it, when there is one - so the frontend can poll for
 // conversion progress without depending on any server-side session or
