@@ -1,4 +1,10 @@
 // Command api runs the okf-converter HTTP API.
+//
+// The API only ever *publishes* conversion jobs: it accepts an upload, hands
+// back a job identifier, and returns. The conversion itself runs in a
+// separate process (see cmd/worker), in its own container, so workers can be
+// scaled without scaling the API and a slow conversion can never occupy an
+// HTTP request.
 package main
 
 import (
@@ -21,8 +27,6 @@ import (
 	"okf-converter/backend/internal/middleware"
 	"okf-converter/backend/internal/storage"
 )
-
-const convertWorkers = 2
 
 func main() {
 	if err := run(); err != nil {
@@ -63,12 +67,7 @@ func run() error {
 	outputRepo := files.NewPgOutputRepository(dbPool)
 	jobRepo := files.NewPgJobRepository(dbPool)
 
-	convertQueue, err := convert.NewRabbitQueue(rabbitConn, convert.NewSplitConverter(store, fileRepo, outputRepo, jobRepo), convertWorkers)
-	if err != nil {
-		return err
-	}
-
-	convertGroup, err := convertQueue.Start(ctx)
+	publisher, err := convert.NewPublisher(rabbitConn)
 	if err != nil {
 		return err
 	}
@@ -84,7 +83,7 @@ func run() error {
 		}
 
 		job := convert.Job{JobID: convertJob.ID, FileID: file.ID, ObjectKey: objectKey, ContentType: file.ContentType, OriginalName: file.OriginalName}
-		if err := convertQueue.Enqueue(ctx, job); err != nil {
+		if err := publisher.Enqueue(ctx, job); err != nil {
 			log.Printf("failed to enqueue convert job for file %s: %v", file.ID, err)
 		}
 	}
@@ -139,11 +138,8 @@ func run() error {
 
 	shutdownErr := srv.Shutdown(shutdownCtx)
 
-	if err := convertQueue.Close(); err != nil {
-		log.Printf("convert queue close: %v", err)
-	}
-	if err := convertGroup.Wait(); err != nil {
-		log.Printf("convert queue shutdown: %v", err)
+	if err := publisher.Close(); err != nil {
+		log.Printf("convert publisher close: %v", err)
 	}
 
 	return shutdownErr

@@ -36,6 +36,11 @@ type Config struct {
 	DatabaseURL string
 	RabbitMQURL string
 
+	// WorkerConcurrency is how many jobs a single worker process converts in
+	// parallel (cmd/worker only; the API never consumes). Total throughput is
+	// this times the number of worker containers.
+	WorkerConcurrency int
+
 	Minio MinioConfig
 }
 
@@ -92,6 +97,14 @@ func Load() (Config, error) {
 
 	minioUseSSL := boolEnv("MINIO_USE_SSL")
 
+	workerConcurrency, err := intEnv("WORKER_CONCURRENCY", 2)
+	if err != nil {
+		return Config{}, err
+	}
+	if workerConcurrency < 1 {
+		return Config{}, fmt.Errorf("WORKER_CONCURRENCY must be at least 1")
+	}
+
 	return Config{
 		Env:         os.Getenv("APP_ENV"),
 		Port:        stringEnv("PORT", "3000"),
@@ -100,6 +113,8 @@ func Load() (Config, error) {
 		JWTSecret:   jwtSecret,
 		DatabaseURL: databaseURL,
 		RabbitMQURL: rabbitMQURL,
+
+		WorkerConcurrency: workerConcurrency,
 
 		Minio: MinioConfig{
 			Endpoint:  minioEndpoint,

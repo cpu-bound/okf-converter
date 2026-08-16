@@ -4,6 +4,51 @@ name: okf-converter
 # `.env` de la raíz, que Docker Compose carga automáticamente. Este archivo
 # solo describe el cableado entre servicios.
 
+# `api` y `worker` son dos binarios del mismo módulo de Go, con la misma
+# imagen y el mismo entorno: comparten la base de datos, el almacenamiento y
+# la cola, pero son procesos distintos en contenedores distintos. Por eso el
+# entorno se define una sola vez aquí y ambos lo referencian.
+x-backend-environment: &backend-environment
+  APP_ENV: ${APP_ENV}
+
+  # Puerto interno del contenedor. No se publica al host: el frontend hace de
+  # proxy inverso hacia http://api:3000 (ver frontend/nginx.conf), y en el
+  # worker solo sirve /metrics para que Prometheus lo raspe.
+  PORT: 3000
+
+  DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+
+  RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+
+  JWT_SECRET: ${JWT_SECRET}
+
+  FRONTEND_URL: ${FRONTEND_URL}
+
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY}
+
+  MINIO_ENDPOINT: minio
+  MINIO_PORT: 9000
+  MINIO_USE_SSL: "false"
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+  MINIO_BUCKET: ${MINIO_BUCKET}
+
+  # Used only for signing presigned URLs, which the browser follows
+  # directly - must be reachable from outside the Docker network.
+  MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
+  MINIO_PUBLIC_PORT: ${MINIO_PUBLIC_PORT}
+  MINIO_PUBLIC_USE_SSL: "false"
+
+x-backend-dependencies: &backend-dependencies
+  db:
+    condition: service_healthy
+
+  minio:
+    condition: service_started
+
+  rabbitmq:
+    condition: service_healthy
+
 services:
 
   frontend:
@@ -23,50 +68,46 @@ services:
     restart: unless-stopped
 
 
+  # Solo publica trabajos en la cola. Nunca convierte: una conversión larga
+  # no puede ocupar una petición HTTP ni un proceso de la API.
   api:
     build:
       context: ./backend
       dockerfile: Dockerfile
 
+    image: okf-converter-backend
+
     container_name: okf-converter-api
 
-    environment:
-      APP_ENV: ${APP_ENV}
+    environment: *backend-environment
 
-      # Puerto interno del contenedor. No se publica al host: el frontend
-      # hace de proxy inverso hacia http://api:3000 (ver frontend/nginx.conf).
-      PORT: 3000
+    depends_on: *backend-dependencies
 
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    restart: unless-stopped
 
-      RABBITMQ_URL: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
 
-      JWT_SECRET: ${JWT_SECRET}
+  # Solo consume trabajos de la cola. Es el mismo binario compilado en la
+  # misma imagen que `api`, con otro entrypoint, y se escala aparte:
+  #
+  #   docker compose up -d --scale worker=4    (o: make scale SERVICE=worker N=4)
+  #
+  # No lleva container_name ni puertos publicados justamente para poder
+  # correr con varias réplicas.
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
 
-      FRONTEND_URL: ${FRONTEND_URL}
+    image: okf-converter-backend
 
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: 9000
-      MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET}
+    entrypoint: ["/worker"]
 
-      # Used only for signing presigned URLs, which the browser follows
-      # directly - must be reachable from outside the Docker network.
-      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT}
-      MINIO_PUBLIC_PORT: ${MINIO_PUBLIC_PORT}
-      MINIO_PUBLIC_USE_SSL: "false"
+    environment: *backend-environment
 
-    depends_on:
-      db:
-        condition: service_healthy
+    depends_on: *backend-dependencies
 
-      minio:
-        condition: service_started
-
-      rabbitmq:
-        condition: service_healthy
+    deploy:
+      replicas: ${WORKER_REPLICAS}
 
     restart: unless-stopped
 

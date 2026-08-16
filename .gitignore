@@ -51,3 +51,6 @@ Thumbs.db
 # Compose no carga por defecto (usar `--env-file .env.local`).
 .env.local
 .env.*.local
+
+# Notas de trabajo, no parte de la entrega
+preguntas-profesor.md

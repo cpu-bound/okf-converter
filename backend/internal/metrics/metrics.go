@@ -1,5 +1,10 @@
 // Package metrics holds the Prometheus collectors for the conversion job
-// pipeline, exposed on GET /metrics (wired in cmd/api/main.go).
+// pipeline. Both binaries expose them on GET /metrics, but each only ever
+// moves the ones for its own side of the queue: the API increments
+// JobsEnqueuedTotal, the workers increment everything else. Prometheus
+// scrapes them separately (see observability/prometheus/prometheus.yml), so
+// the gap between jobs enqueued and jobs processed is visible as a real
+// backlog rather than hidden inside one process.
 package metrics
 
 import (
@@ -8,12 +13,27 @@ import (
 )
 
 var (
+	// JobsEnqueuedTotal counts conversion jobs published to the queue,
+	// incremented by the API in Publisher.Enqueue.
+	JobsEnqueuedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "convert_jobs_enqueued_total",
+		Help: "Conversion jobs published to the queue.",
+	})
+
 	// JobsProcessedTotal counts conversion jobs by outcome ("success" or
-	// "failed"), incremented once per job in RabbitQueue.process.
+	// "failed"), incremented once per job in Consumer.process.
 	JobsProcessedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "convert_jobs_processed_total",
 		Help: "Conversion jobs processed, by outcome.",
 	}, []string{"status"})
+
+	// JobsInFlight tracks how many jobs a worker process is converting right
+	// now. Summed across worker replicas it shows how much of the pool is
+	// busy, which is what makes scaling the worker container observable.
+	JobsInFlight = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "convert_jobs_in_flight",
+		Help: "Conversion jobs currently being processed by this worker.",
+	})
 
 	// JobDurationSeconds observes wall-clock time spent in Converter.Convert
 	// for a single job, regardless of outcome.

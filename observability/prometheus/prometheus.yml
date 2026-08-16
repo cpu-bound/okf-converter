@@ -2,6 +2,20 @@ global:
   scrape_interval: 15s
 
 scrape_configs:
+  # La API solo publica trabajos, así que de aquí sale
+  # convert_jobs_enqueued_total.
   - job_name: okf-converter-api
     static_configs:
       - targets: ["api:3000"]
+
+  # Los workers son varias réplicas sin nombre fijo, así que no se pueden
+  # listar como targets estáticos. El DNS interno de Docker resuelve el
+  # nombre del servicio a la IP de cada réplica, y Prometheus las descubre
+  # todas: al escalar el servicio aparecen targets nuevos sin tocar este
+  # archivo.
+  - job_name: okf-converter-worker
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 3000
+        refresh_interval: 15s

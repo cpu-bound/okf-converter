@@ -10,7 +10,8 @@ pueden descargar individualmente.
 | Servicio     | Tecnología                         | Propósito                                     |
 | ------------ | ----------------------------------- | ----------------------------------------------- |
 | `frontend`   | Angular 21, servido con Nginx       | Páginas de autenticación + dashboard            |
-| `api`        | Go                                   | API REST, autenticación, pipeline de conversión |
+| `api`        | Go                                   | API REST, autenticación, publica trabajos       |
+| `worker`     | Go                                   | Consume trabajos y ejecuta la conversión        |
 | `db`         | PostgreSQL 17                       | Usuarios, archivos, salidas                     |
 | `minio`      | MinIO                               | Almacenamiento de archivos subidos y salidas    |
 | `rabbitmq`   | RabbitMQ                            | Cola de trabajos de conversión                  |
@@ -19,10 +20,24 @@ pueden descargar individualmente.
 
 Flujo de subida: el frontend pide al API una URL prefirmada de subida, sube
 el archivo directamente a MinIO, y luego confirma la subida. El API encola
-un trabajo de conversión en RabbitMQ; un pool de workers dentro del proceso
-`api` extrae el texto del documento (`backend/internal/convert/extract.go`)
-y lo divide en fragmentos por párrafo, guardando cada uno como un objeto
-`.txt` en MinIO (`backend/internal/convert/split.go`).
+un trabajo de conversión en RabbitMQ y responde de inmediato; a partir de
+ahí no vuelve a intervenir.
+
+`api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
+del mismo módulo de Go, construidos en la misma imagen y separados a
+propósito: el API solo publica en la cola y el worker solo consume. Comparten
+la base de datos, el almacenamiento y la cola, pero nunca se comunican entre
+sí. Por eso la conversión no puede ocupar una petición HTTP, y los workers se
+escalan sin tocar el API:
+
+```bash
+make scale N=4          # docker compose up -d --scale worker=4
+```
+
+Cada contenedor de worker convierte `WORKER_CONCURRENCY` trabajos en
+paralelo, así que el paralelismo total es réplicas × concurrencia. RabbitMQ
+entrega cada trabajo a un solo consumidor, con `prefetch` acotado para que la
+carga se reparta en vez de que un consumidor acapare la cola.
 
 ## Diagramas
 
@@ -37,7 +52,8 @@ flowchart LR
 
     subgraph app ["Aplicación"]
         Frontend["frontend\nAngular + Nginx\n:8080"]
-        API["api\nGo\n:3000"]
+        API["api\nGo\nsolo publica"]
+        Worker["worker × N\nGo\nsolo consume"]
     end
 
     subgraph data ["Datos y almacenamiento"]
@@ -56,10 +72,15 @@ flowchart LR
     Browser -- "URLs prefirmadas\n(subida y descarga directas)" --> Minio
 
     API -- "SQL: usuarios, archivos,\nsalidas, trabajos" --> DB
-    API -- "presign / stat / put / get\nde objetos" --> Minio
-    API -- "publica y consume\ntrabajos de conversión" --> Rabbit
+    API -- "presign / stat\nde objetos" --> Minio
+    API -- "publica trabajos" --> Rabbit
 
-    API -- "expone /metrics" --> Prom
+    Rabbit -- "entrega cada trabajo\na un solo worker" --> Worker
+    Worker -- "SQL: estado del trabajo,\nsalidas" --> DB
+    Worker -- "lee el original,\nescribe el bundle" --> Minio
+
+    Prom -- "raspa /metrics" --> API
+    Prom -- "descubre las réplicas\npor DNS y raspa /metrics" --> Worker
     Grafana -- "consulta métricas" --> Prom
 ```
 
@@ -172,8 +193,9 @@ no hace falta tener Go ni Node instalados en la máquina.
 ## Estructura del proyecto
 
 ```
-backend/         API en Go (autenticación, archivos, pipeline de conversión)
-  cmd/api/        Punto de entrada
+backend/         Backend en Go (un módulo, dos binarios)
+  cmd/api/        Punto de entrada del API: publica trabajos, nunca convierte
+  cmd/worker/     Punto de entrada del worker: consume trabajos y convierte
   internal/
     auth/          Registro, login, JWT, hashing de contraseñas
     convert/        Consumidor de la cola, extracción de texto, división en párrafos

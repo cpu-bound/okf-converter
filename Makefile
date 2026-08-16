@@ -14,8 +14,8 @@ GO_IMAGE     := golang:1.26-alpine
 NODE_IMAGE   := node:22-alpine
 
 # Servicio y réplicas para `make scale` (ej: make scale SERVICE=worker N=3).
-SERVICE      ?= api
-N            ?= 2
+SERVICE      ?= worker
+N            ?= 3
 
 # Servicio para `make logs-one` / `make sh` (ej: make sh S=db).
 S            ?= api
@@ -48,8 +48,9 @@ rebuild: ## Reconstruye una imagen y reinicia su servicio (make rebuild S=api)
 	$(COMPOSE) up --build -d --no-deps $(S)
 
 .PHONY: scale
-scale: ## Escala un servicio (make scale SERVICE=worker N=3)
+scale: ## Escala los workers sin tocar la API (make scale N=4)
 	$(COMPOSE) up -d --no-deps --scale $(SERVICE)=$(N) $(SERVICE)
+	@$(COMPOSE) ps $(SERVICE)
 
 .PHONY: reset
 reset: ## Borra contenedores Y volúmenes (Postgres, MinIO, RabbitMQ) - entorno limpio
