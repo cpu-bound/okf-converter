@@ -79,7 +79,7 @@ func run() error {
 		return err
 	}
 
-	slog.Info("worker started", "concurrency", cfg.WorkerConcurrency)
+	slog.Info("worker iniciado", "concurrency", cfg.WorkerConcurrency)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: metricsHandler()}
 
@@ -94,7 +94,7 @@ func run() error {
 
 	select {
 	case <-ctx.Done():
-		slog.Info("worker shutting down")
+		slog.Info("apagando el worker")
 	case err := <-serveErr:
 		if err != nil {
 			return err
@@ -110,10 +110,10 @@ func run() error {
 	// jobs already in flight finish, so a redeploy or a scale-down never
 	// abandons a conversion halfway through.
 	if err := consumer.Close(); err != nil {
-		slog.Error("consumer close failed", "error", err)
+		slog.Error("falló el cierre del consumidor de la cola", "error", err)
 	}
 	if err := group.Wait(); err != nil {
-		slog.Error("consumer shutdown failed", "error", err)
+		slog.Error("falló el apagado del consumidor de la cola", "error", err)
 	}
 
 	return shutdownErr

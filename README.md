@@ -27,6 +27,28 @@ detectadas con su procedencia. Cada concepto abre con su título, lleva el
 contenido de su unidad y cierra con enlaces al índice y a sus vecinos, de
 modo que el bundle se puede recorrer completo desde cualquier archivo.
 
+Todos los archivos llevan frontmatter YAML, como pide
+[Open Knowledge Format v0.1](https://cloud.google.com/blog/products/data-analytics/how-the-open-knowledge-format-can-improve-data-sharing),
+que define un bundle como un directorio de Markdown con frontmatter y exige
+exactamente un campo en cada concepto: `type`. Se rellenan además los campos
+estándar consultables que el generador puede conocer:
+
+```yaml
+---
+type: "concept"
+title: "Introducción"
+description: "Unidad 1 de 3 del documento «notas-de-clase.md»."
+tags: ["okf", "notas-de-clase"]
+source: "notas-de-clase.md"
+timestamp: 2026-08-15T18:42:04Z
+---
+```
+
+`index.md` y `log.md` son nombres reservados por la especificación y llevan
+`type: index` y `type: log`. Los conceptos se enlazan entre sí con enlaces
+Markdown normales, que es la forma en que OKF representa el grafo de
+relaciones.
+
 Un resultado exitoso nunca es un Markdown suelto: o se generan todos los
 archivos del bundle, o el trabajo falla. Un documento breve sin divisiones
 produce un bundle igual de válido, con `index.md`, `log.md` y un único

@@ -157,8 +157,8 @@ func TestConceptCarriesTitleBodyAndNavigation(t *testing.T) {
 	}
 
 	content := string(second)
-	if !strings.HasPrefix(content, "# Dos\n") {
-		t.Errorf("concept does not open with its title:\n%s", content)
+	if !strings.Contains(content, "\n# Dos\n") {
+		t.Errorf("concept does not carry its title as a heading:\n%s", content)
 	}
 	if !strings.Contains(content, "cuerpo dos") {
 		t.Errorf("concept does not carry its body:\n%s", content)

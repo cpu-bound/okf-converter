@@ -14,8 +14,8 @@ func Recover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic handling %s %s: %v", r.Method, r.URL.Path, rec)
-				httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+				log.Printf("pánico atendiendo %s %s: %v", r.Method, r.URL.Path, rec)
+				httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 			}
 		}()
 

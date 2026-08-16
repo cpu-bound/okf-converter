@@ -161,9 +161,9 @@ func (c *Consumer) Start(ctx context.Context) (*errgroup.Group, error) {
 func (c *Consumer) process(ctx context.Context, d amqp.Delivery) {
 	job, err := decodeJob(d.Body)
 	if err != nil {
-		slog.Error("convert: dropping malformed job message", "error", err)
+		slog.Error("conversión: se descarta un mensaje de trabajo mal formado", "error", err)
 		if nackErr := d.Nack(false, false); nackErr != nil {
-			slog.Error("convert: nack failed", "error", nackErr)
+			slog.Error("conversión: falló el nack del mensaje", "error", nackErr)
 		}
 		return
 	}
@@ -178,7 +178,7 @@ func (c *Consumer) process(ctx context.Context, d amqp.Delivery) {
 
 	if err != nil {
 		metrics.JobsProcessedTotal.WithLabelValues("failed").Inc()
-		slog.Error("convert job failed",
+		slog.Error("trabajo de conversión fallido",
 			"job_id", job.JobID,
 			"file_id", job.FileID,
 			"object_key", job.ObjectKey,
@@ -187,7 +187,7 @@ func (c *Consumer) process(ctx context.Context, d amqp.Delivery) {
 		)
 	} else {
 		metrics.JobsProcessedTotal.WithLabelValues("success").Inc()
-		slog.Info("convert job succeeded",
+		slog.Info("trabajo de conversión completado",
 			"job_id", job.JobID,
 			"file_id", job.FileID,
 			"object_key", job.ObjectKey,
@@ -196,7 +196,7 @@ func (c *Consumer) process(ctx context.Context, d amqp.Delivery) {
 	}
 
 	if err := d.Ack(false); err != nil {
-		slog.Error("convert: ack failed", "job_id", job.JobID, "error", err)
+		slog.Error("conversión: falló el ack del mensaje", "job_id", job.JobID, "error", err)
 	}
 }
 

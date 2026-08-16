@@ -7,6 +7,12 @@
 //	├── log.md        trazabilidad de la conversión
 //	└── 01-....md     un concepto por unidad lógica
 //
+// The layout follows Open Knowledge Format v0.1, which defines a bundle as a
+// directory of Markdown files with YAML frontmatter: index.md and log.md are
+// reserved filenames, concepts link to each other with ordinary Markdown
+// links, and every file carries a `type` - the one field OKF requires (see
+// frontmatter.go).
+//
 // A successful conversion is never a loose Markdown file - it is the whole
 // bundle, which is why building it is one operation that either produces
 // every required file or fails. The package knows nothing about storage,
@@ -115,12 +121,14 @@ func Build(src Source, units []Unit, log *Log) (Bundle, error) {
 		log:      log,
 	}
 
-	for _, c := range concepts {
-		b.Files = append(b.Files, File{Name: c.FileName, Content: []byte(renderConcept(c, concepts))})
-	}
-	log.Step("%d documento(s) de concepto generados en Markdown", len(concepts))
+	rc := renderContext{title: title, root: root, src: src, concepts: concepts}
 
-	b.Files = append(b.Files, File{Name: IndexFile, Content: []byte(renderIndex(title, src, concepts))})
+	for _, c := range concepts {
+		b.Files = append(b.Files, File{Name: c.FileName, Content: []byte(renderConcept(rc, c))})
+	}
+	log.Step("%d documento(s) de concepto generados en Markdown con frontmatter OKF", len(concepts))
+
+	b.Files = append(b.Files, File{Name: IndexFile, Content: []byte(renderIndex(rc))})
 	log.Step("index.md generado con %d enlace(s) en el orden del documento de origen", len(concepts))
 
 	b.Files = append(b.Files, File{Name: LogFile, Content: nil})
@@ -134,7 +142,8 @@ func Build(src Source, units []Unit, log *Log) (Bundle, error) {
 // above all - is only known once the bundle exists, and log.md has to end up
 // carrying it.
 func (b *Bundle) RefreshLog() {
-	content := []byte(renderLog(b.title, b.src, b.concepts, b.log))
+	rc := renderContext{title: b.title, root: b.Root, src: b.src, concepts: b.concepts}
+	content := []byte(renderLog(rc, b.log))
 	for i := range b.Files {
 		if b.Files[i].Name == LogFile {
 			b.Files[i].Content = content
@@ -192,8 +201,34 @@ func nameConcepts(units []Unit) []concept {
 	return concepts
 }
 
-func renderIndex(title string, src Source, concepts []concept) string {
+// renderContext is what every file of the bundle needs to know about the
+// bundle it belongs to in order to render itself.
+type renderContext struct {
+	title    string
+	root     string
+	src      Source
+	concepts []concept
+}
+
+// tags are the OKF tags every file in this bundle carries: one marking the
+// format, one identifying the bundle itself.
+func (rc renderContext) tags() []string {
+	return []string{"okf", rc.root}
+}
+
+func renderIndex(rc renderContext) string {
+	title, src, concepts := rc.title, rc.src, rc.concepts
+
 	var b strings.Builder
+
+	b.WriteString(frontmatter{
+		Type:        TypeIndex,
+		Title:       title,
+		Description: fmt.Sprintf("Índice del bundle OKF generado a partir de «%s», con %d unidad(es) de conocimiento.", src.OriginalName, len(concepts)),
+		Tags:        rc.tags(),
+		Timestamp:   src.ConvertedAt,
+		Source:      src.OriginalName,
+	}.render())
 
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "Bundle de conocimiento en formato OKF, generado a partir de `%s`.\n\n", src.OriginalName)
@@ -217,8 +252,19 @@ func renderIndex(title string, src Source, concepts []concept) string {
 	return b.String()
 }
 
-func renderConcept(c concept, all []concept) string {
+func renderConcept(rc renderContext, c concept) string {
+	all := rc.concepts
+
 	var b strings.Builder
+
+	b.WriteString(frontmatter{
+		Type:        TypeConcept,
+		Title:       c.Title,
+		Description: fmt.Sprintf("Unidad %d de %d del documento «%s».", c.Position, len(all), rc.src.OriginalName),
+		Tags:        rc.tags(),
+		Timestamp:   rc.src.ConvertedAt,
+		Source:      rc.src.OriginalName,
+	}.render())
 
 	fmt.Fprintf(&b, "# %s\n\n", c.Title)
 
@@ -248,8 +294,19 @@ func renderConcept(c concept, all []concept) string {
 	return b.String()
 }
 
-func renderLog(title string, src Source, concepts []concept, log *Log) string {
+func renderLog(rc renderContext, log *Log) string {
+	title, src, concepts := rc.title, rc.src, rc.concepts
+
 	var b strings.Builder
+
+	b.WriteString(frontmatter{
+		Type:        TypeLog,
+		Title:       "Bitácora de conversión — " + title,
+		Description: fmt.Sprintf("Trazabilidad de la conversión de «%s» a un bundle OKF.", src.OriginalName),
+		Tags:        rc.tags(),
+		Timestamp:   src.ConvertedAt,
+		Source:      src.OriginalName,
+	}.render())
 
 	fmt.Fprintf(&b, "# Bitácora de conversión — %s\n\n", title)
 	fmt.Fprintf(&b, "- **Documento de origen:** `%s` (%s, %s)\n", src.OriginalName, orDash(src.ContentType), humanSize(src.Size))

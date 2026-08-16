@@ -28,7 +28,7 @@ func RequireAuth(loader UserLoader) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, err := loader.UserFromRequest(r)
 			if err != nil {
-				httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+				httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 				return
 			}
 

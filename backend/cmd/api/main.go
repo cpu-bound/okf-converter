@@ -80,7 +80,7 @@ func run() error {
 	fileHandlers.EnqueueConversion = func(ctx context.Context, file files.File, objectKey string, retryOf *string) {
 		convertJob, err := jobRepo.Create(ctx, file.ID, retryOf)
 		if err != nil {
-			log.Printf("failed to record conversion job for file %s: %v", file.ID, err)
+			log.Printf("no se pudo registrar el trabajo de conversión del archivo %s: %v", file.ID, err)
 			return
 		}
 
@@ -93,7 +93,7 @@ func run() error {
 			Size:         file.Size,
 		}
 		if err := publisher.Enqueue(ctx, job); err != nil {
-			log.Printf("failed to enqueue convert job for file %s: %v", file.ID, err)
+			log.Printf("no se pudo encolar el trabajo de conversión del archivo %s: %v", file.ID, err)
 		}
 	}
 
@@ -125,7 +125,7 @@ func run() error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("listening on :%s", cfg.Port)
+		log.Printf("API escuchando en :%s", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serveErr <- err
 			return
@@ -135,7 +135,7 @@ func run() error {
 
 	select {
 	case <-ctx.Done():
-		log.Println("shutting down")
+		log.Println("apagando la API")
 	case err := <-serveErr:
 		if err != nil {
 			return err
@@ -148,7 +148,7 @@ func run() error {
 	shutdownErr := srv.Shutdown(shutdownCtx)
 
 	if err := publisher.Close(); err != nil {
-		log.Printf("convert publisher close: %v", err)
+		log.Printf("error al cerrar el publicador de la cola: %v", err)
 	}
 
 	return shutdownErr

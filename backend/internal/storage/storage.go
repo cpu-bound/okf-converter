@@ -85,7 +85,7 @@ func (s *MinioStorage) EnsureBucket(ctx context.Context) error {
 	}
 
 	if exists {
-		log.Printf("MinIO bucket exists: %s", s.bucket)
+		log.Printf("el bucket de MinIO ya existe: %s", s.bucket)
 		return nil
 	}
 
@@ -93,7 +93,7 @@ func (s *MinioStorage) EnsureBucket(ctx context.Context) error {
 		return fmt.Errorf("create bucket: %w", err)
 	}
 
-	log.Printf("Created MinIO bucket: %s", s.bucket)
+	log.Printf("bucket de MinIO creado: %s", s.bucket)
 	return nil
 }
 

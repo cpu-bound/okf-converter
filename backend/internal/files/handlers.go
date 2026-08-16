@@ -55,7 +55,7 @@ func NewHandlers(repo FileRepository, outputs OutputRepository, jobs JobReposito
 func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 		return
 	}
 
@@ -67,13 +67,13 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil ||
 		body.Filename == "" || body.ContentType == "" || body.Size == nil {
-		httpx.Error(w, http.StatusBadRequest, "filename, contentType and size are required.")
+		httpx.Error(w, http.StatusBadRequest, "filename, contentType y size son obligatorios.")
 		return
 	}
 
 	size := *body.Size
 	if size <= 0 || size > MaxFileSize {
-		httpx.Error(w, http.StatusBadRequest, "File must be between 1 byte and 500 MB.")
+		httpx.Error(w, http.StatusBadRequest, "El archivo debe pesar entre 1 byte y 500 MB.")
 		return
 	}
 
@@ -83,7 +83,7 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 	if h.SupportedFormat != nil && !h.SupportedFormat(body.ContentType, body.Filename) {
 		message := h.SupportedFormatMessage
 		if message == "" {
-			message = "Unsupported file format."
+			message = "Formato de archivo no soportado."
 		}
 		httpx.Error(w, http.StatusUnsupportedMediaType, message)
 		return
@@ -94,13 +94,13 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 
 	file, err := h.repo.Create(ctx, user.ID, objectKey, body.Filename, body.ContentType, size)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
 	uploadURL, err := h.storage.PresignedPutURL(ctx, objectKey, presignedURLExpiry)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -113,7 +113,7 @@ func (h *Handlers) UploadURL(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 		return
 	}
 
@@ -123,29 +123,29 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	record, err := h.repo.FindForUser(ctx, fileID, user.ID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			httpx.Error(w, http.StatusNotFound, "File not found.")
+			httpx.Error(w, http.StatusNotFound, "Archivo no encontrado.")
 			return
 		}
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
 	info, err := h.storage.StatObject(ctx, record.ObjectKey)
 	if err != nil {
-		httpx.Error(w, http.StatusConflict, "Upload was not found in storage. It may have failed or the link expired.")
+		httpx.Error(w, http.StatusConflict, "No se encontró la subida en el almacenamiento: pudo haber fallado o el enlace expiró.")
 		return
 	}
 
 	if info.Size != record.Size {
 		_ = h.storage.RemoveObject(ctx, record.ObjectKey)
 		_ = h.repo.Delete(ctx, record.ID)
-		httpx.Error(w, http.StatusConflict, "Uploaded file does not match the declared size.")
+		httpx.Error(w, http.StatusConflict, "El archivo subido no coincide con el tamaño declarado.")
 		return
 	}
 
 	file, err := h.repo.MarkReady(ctx, record.ID)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -155,7 +155,7 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	// until the worker writes storage.ResultObjectName(record.ObjectKey).
 	resultURL, err := h.storage.PresignedGetURL(ctx, storage.ResultObjectName(record.ObjectKey), resultURLExpiry)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -172,7 +172,7 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 		return
 	}
 
@@ -182,10 +182,10 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 	record, err := h.repo.FindForUser(ctx, fileID, user.ID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			httpx.Error(w, http.StatusNotFound, "File not found.")
+			httpx.Error(w, http.StatusNotFound, "Archivo no encontrado.")
 			return
 		}
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -201,7 +201,7 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 		return
 	}
 
@@ -211,16 +211,16 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 	record, err := h.repo.FindForUser(ctx, fileID, user.ID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			httpx.Error(w, http.StatusNotFound, "File not found.")
+			httpx.Error(w, http.StatusNotFound, "Archivo no encontrado.")
 			return
 		}
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
 	file, won, err := h.repo.MarkRetrying(ctx, record.ID)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -230,7 +230,7 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			retryOf = &prevJob.ID
 		} else if !errors.Is(err, ErrNoJobs) {
-			httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+			httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 			return
 		}
 
@@ -241,7 +241,7 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 
 	resultURL, err := h.storage.PresignedGetURL(ctx, storage.ResultObjectName(record.ObjectKey), resultURLExpiry)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -254,7 +254,7 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Outputs(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "Not authenticated.")
+		httpx.Error(w, http.StatusUnauthorized, "No autenticado.")
 		return
 	}
 
@@ -263,16 +263,16 @@ func (h *Handlers) Outputs(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := h.repo.FindForUser(ctx, fileID, user.ID); err != nil {
 		if errors.Is(err, ErrNotFound) {
-			httpx.Error(w, http.StatusNotFound, "File not found.")
+			httpx.Error(w, http.StatusNotFound, "Archivo no encontrado.")
 			return
 		}
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
 	records, err := h.outputs.ListForFile(ctx, fileID)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+		httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 		return
 	}
 
@@ -280,7 +280,7 @@ func (h *Handlers) Outputs(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range records {
 		url, err := h.storage.PresignedGetURL(ctx, rec.ObjectKey, presignedURLExpiry)
 		if err != nil {
-			httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
+			httpx.Error(w, http.StatusInternalServerError, "Ocurrió un error inesperado.")
 			return
 		}
 		outputs = append(outputs, Output{ID: rec.ID, Name: rec.Name, Position: rec.Position, Size: rec.Size, DownloadURL: url})
