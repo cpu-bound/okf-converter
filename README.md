@@ -179,6 +179,29 @@ el rechazo por formato ocurre antes incluso de la petición.
 | `converted` | Bundle publicado |
 | `failed` | Falló (con botón de reintento) |
 
+## La API
+
+Todas las rutas de `/api/files` exigen sesión y están acotadas al usuario
+autenticado: el `user_id` va en la consulta SQL, no en un filtro posterior.
+
+| Método | Ruta | Qué hace |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Crea la cuenta y abre sesión |
+| `POST` | `/api/auth/login` | Inicia sesión (cookie httpOnly con el JWT) |
+| `POST` | `/api/auth/logout` | Cierra la sesión |
+| `GET` | `/api/auth/me` | Usuario de la sesión actual |
+| `POST` | `/api/auth/check-email` | Comprueba si un correo ya está registrado |
+| `POST` | `/api/auth/reset-password` | Restablece la contraseña |
+| `GET` | `/api/files` | Los archivos del usuario, del más reciente al más antiguo |
+| `POST` | `/api/files/upload-url` | Registra el archivo y firma la URL de subida. `415` si el formato no se admite |
+| `POST` | `/api/files/{id}/confirm` | Verifica la subida y encola la conversión |
+| `GET` | `/api/files/{id}` | Estado del archivo + informe de validación regla por regla |
+| `POST` | `/api/files/{id}/retry` | Reintento manual. Idempotente: repetirlo no encola dos veces |
+| `GET` | `/api/files/{id}/outputs` | Archivos del bundle por separado, con URLs prefirmadas |
+| `GET` | `/api/files/{id}/bundle` | Descarga el `.zip` por flujo |
+| `GET` | `/api/health` | Sonda de salud |
+| `GET` | `/metrics` | Métricas de Prometheus (también en cada worker) |
+
 ## Idempotencia y reintentos
 
 ### Una entrega duplicada no convierte dos veces
@@ -242,6 +265,35 @@ la idempotencia funcionando, no un problema), `convert_jobs_retried_total` y
 
 `make queue` muestra el estado de las tres colas.
 
+## Observabilidad
+
+Prometheus raspa `/metrics` del API y de **cada réplica de worker**, que
+descubre por DNS de Docker (`dns_sd_configs`), así que escalar los workers no
+exige tocar la configuración de Prometheus. Grafana trae aprovisionado el
+dashboard *Conversión de documentos*
+([`observability/grafana/dashboards/jobs.json`](observability/grafana/dashboards/jobs.json)).
+
+| Métrica | Quién la mueve | Para qué |
+| --- | --- | --- |
+| `convert_jobs_enqueued_total` | API | Trabajos publicados en la cola |
+| `convert_jobs_processed_total{status}` | Workers | Intentos de conversión por resultado |
+| `convert_jobs_in_flight` | Workers | Cuánto del pool está ocupado; hace visible el escalado |
+| `convert_job_duration_seconds` | Workers | Duración de la conversión (p50/p95/p99) |
+| `convert_bundles_validated_total{verdict}` | Workers | Bundles válidos / con advertencias / inválidos |
+| `convert_jobs_skipped_total` | Workers | Entregas duplicadas descartadas |
+| `convert_jobs_retried_total` | Workers | Intentos fallidos reprogramados |
+| `convert_jobs_dead_lettered_total{reason}` | Workers | Mensajes descartados definitivamente |
+
+Están separadas a propósito porque significan cosas distintas. Un documento
+que **no pasa la validación** y un trabajo que **se cae** son fallas de
+naturaleza muy diferente, y en un único contador de fallos no se
+distinguirían. Y `convert_jobs_skipped_total` contando hacia arriba no es un
+problema: cada unidad es una conversión repetida que **no** ocurrió.
+
+Que la API y los workers expongan las suyas por separado es lo que permite
+ver la diferencia entre lo encolado y lo procesado como un respaldo real de
+la cola, en vez de quedar escondida dentro de un solo proceso.
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -249,16 +301,20 @@ la idempotencia funcionando, no un problema), `convert_jobs_retried_total` y
 | `frontend`   | Angular 21, servido con Nginx       | Páginas de autenticación + dashboard            |
 | `api`        | Go                                   | API REST, autenticación, publica trabajos       |
 | `worker`     | Go                                   | Consume trabajos y ejecuta la conversión        |
-| `db`         | PostgreSQL 17                       | Usuarios, archivos, salidas                     |
-| `minio`      | MinIO                               | Almacenamiento de archivos subidos y salidas    |
-| `rabbitmq`   | RabbitMQ                            | Cola de trabajos de conversión                  |
-| `prometheus` | Prometheus                          | Recolección de métricas (`/metrics` en `api`)   |
+| `db`         | PostgreSQL 17                       | Usuarios, archivos, trabajos y validaciones     |
+| `minio`      | MinIO                               | Documentos subidos y bundles generados          |
+| `rabbitmq`   | RabbitMQ                            | Colas de trabajos: principal, reintentos y descartes |
+| `prometheus` | Prometheus                          | Métricas de `api` y de cada réplica de `worker` |
 | `grafana`    | Grafana                             | Dashboards sobre las métricas de Prometheus     |
 
-Flujo de subida: el frontend pide al API una URL prefirmada de subida, sube
-el archivo directamente a MinIO, y luego confirma la subida. El API encola
-un trabajo de conversión en RabbitMQ y responde de inmediato; a partir de
-ahí no vuelve a intervenir.
+Flujo de subida: el frontend pide al API una URL prefirmada, sube el archivo
+directamente a MinIO —los bytes nunca pasan por el API— y luego confirma la
+subida. El API encola un trabajo en RabbitMQ y responde de inmediato, sin
+esperar a la conversión.
+
+La descarga, en cambio, **sí** pasa por el API: es el único punto donde se
+puede exigir que quien pide sea el dueño del archivo y que el bundle haya
+pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
 
 `api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
 del mismo módulo de Go, construidos en la misma imagen y separados a
@@ -306,15 +362,16 @@ flowchart LR
 
     Browser -- "HTTP :8080" --> Frontend
     Frontend -- "proxy /api/*" --> API
-    Browser -- "URLs prefirmadas\n(subida y descarga directas)" --> Minio
+    Browser -- "sube con URL prefirmada\n(los bytes no pasan por el API)" --> Minio
 
-    API -- "SQL: usuarios, archivos,\nsalidas, trabajos" --> DB
-    API -- "presign / stat\nde objetos" --> Minio
+    API -- "SQL: usuarios, archivos,\ntrabajos, validaciones" --> DB
+    API -- "firma URLs de subida;\nlee el .zip para servirlo" --> Minio
     API -- "publica trabajos" --> Rabbit
 
     Rabbit -- "entrega cada trabajo\na un solo worker" --> Worker
-    Worker -- "SQL: estado del trabajo,\nsalidas" --> DB
+    Worker -- "SQL: reclamo del trabajo,\nestado, validación" --> DB
     Worker -- "lee el original,\nescribe el bundle" --> Minio
+    Worker -- "reprograma o descarta\nlos intentos fallidos" --> Rabbit
 
     Prom -- "raspa /metrics" --> API
     Prom -- "descubre las réplicas\npor DNS y raspa /metrics" --> Worker
@@ -404,6 +461,15 @@ Una vez en ejecución:
 La API no publica ningún puerto en el host: se accede a través del proxy
 inverso del frontend, en http://localhost:8080/api/.
 
+No hace falta ningún paso previo: el [`.env`](.env) está versionado y el
+esquema de Postgres se aplica solo en el primer arranque. Por eso mismo, si ya
+habías levantado el stack con una versión anterior del esquema, hay que
+descartar los volúmenes —`init.sql` solo corre sobre una base vacía—:
+
+```bash
+make fresh          # equivale a make reset && make up
+```
+
 ## Configuración
 
 Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
@@ -454,7 +520,7 @@ que borrarla, o `make reset`.
 | `make down` / `make reset` | Detiene los contenedores / además borra los volúmenes |
 | `make logs` / `make logs-one S=api` | Logs de todo / de un servicio |
 | `make scale SERVICE=worker N=3` | Escala un servicio |
-| `make queue` | Estado de la cola de conversión en RabbitMQ |
+| `make queue` | Estado de las tres colas de conversión en RabbitMQ |
 | `make psql` | Consola de PostgreSQL |
 | `make urls` / `make config` | URLs y credenciales en uso / compose resuelto |
 | `make test` | Pruebas de backend y frontend |
@@ -470,13 +536,16 @@ backend/         Backend en Go (un módulo, dos binarios)
   cmd/api/        Punto de entrada del API: publica trabajos, nunca convierte
   cmd/worker/     Punto de entrada del worker: consume trabajos y convierte
   internal/
-    auth/          Registro, login, JWT, hashing de contraseñas
-    bundle/         Construcción del bundle OKF: index.md, log.md y conceptos
-    convert/        Cola, extracción de texto, detección de unidades, pipeline
-    files/          Handlers de subida/confirmación/salidas
+    auth/           Registro, login, JWT, hashing de contraseñas
+    bundle/         Construcción y validación del bundle OKF
+    config/         Carga de la configuración desde el entorno
+    convert/        Colas, extracción de texto, segmentación, pipeline
+    db/             Pool de conexiones a Postgres
+    files/          Handlers de subida, estado, listado, descarga y reintento
+    httpx/          Respuestas JSON y CORS
+    metrics/        Métricas de Prometheus
+    middleware/     Guard de autenticación, recuperación de panics
     storage/        Wrapper del cliente de MinIO
-    middleware/      Guard de autenticación, recuperación de panics
-    metrics/         Métricas de Prometheus
 frontend/        App de Angular (login/registro/dashboard)
 database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
@@ -500,19 +569,21 @@ completa y sus valores por defecto).
 
 ## Desarrollo del frontend
 
+Angular 21 requiere Node 20 o superior.
+
 ```bash
 cd frontend
-npm install
+npm ci
 npm start        # ng serve, http://localhost:4200
+npm test         # pruebas unitarias con Vitest
 ```
 
-Las pruebas unitarias usan [Vitest](https://vitest.dev/):
+`ng serve` redirige `/api/*` hacia `http://localhost:8080`
+([`proxy.conf.json`](frontend/proxy.conf.json)), que es el frontend en Docker
+—el cual a su vez hace de proxy inverso hacia el API—. Es decir: para
+desarrollar contra el backend basta con tener el stack levantado
+(`make up`); **el API no publica ningún puerto en el host y no hace falta que
+lo publique**.
 
-```bash
-npm test
-```
-
-El servidor de desarrollo redirige las llamadas al API hacia el origen que
-esté configurado en el entorno; para desarrollar contra el stack completo,
-levantar el backend y sus dependencias con
-`docker compose up db minio rabbitmq api`.
+La sesión sigue funcionando entre los dos puertos porque la cookie se emite
+sin `Domain`, y las cookies de `localhost` no distinguen el puerto.

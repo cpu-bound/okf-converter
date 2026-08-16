@@ -1,17 +1,18 @@
 {
   "uid": "convert-jobs",
-  "title": "Conversion Jobs",
+  "title": "Conversión de documentos",
+  "description": "Flujo de trabajos de conversión: encolado, procesamiento, validación del bundle y tolerancia a fallos.",
   "tags": ["okf-converter"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "10s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
     {
       "id": 1,
       "type": "stat",
-      "title": "Jobs Processed",
+      "title": "Trabajos procesados",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -27,7 +28,7 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Failure Rate (5m)",
+      "title": "Tasa de fallo (5m)",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -35,7 +36,7 @@
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum(rate(convert_jobs_processed_total{status=\"failed\"}[5m])) / sum(rate(convert_jobs_processed_total[5m]))",
-          "legendFormat": "failure rate"
+          "legendFormat": "tasa de fallo"
         }
       ],
       "fieldConfig": {
@@ -54,9 +55,56 @@
       }
     },
     {
+      "id": 5,
+      "type": "stat",
+      "title": "Conversiones en curso",
+      "description": "Sumado sobre todas las réplicas de worker: cuánto del pool está ocupado ahora mismo. Es lo que hace visible el efecto de `make scale SERVICE=worker N=…`.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(convert_jobs_in_flight)",
+          "legendFormat": "en curso"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Trabajos pendientes",
+      "description": "Encolados menos los que ya salieron del sistema. Un trabajo sale al convertirse bien o al agotar sus intentos; los intentos fallidos intermedios no cuentan, porque el trabajo sigue pendiente. Deriva si se reinicia un proceso, porque los contadores vuelven a cero.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(convert_jobs_enqueued_total) - sum(convert_jobs_processed_total{status=\"success\"}) - sum(convert_jobs_dead_lettered_total)",
+          "legendFormat": "pendientes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
       "id": 3,
       "type": "timeseries",
-      "title": "Jobs Processed Rate, by Status",
+      "title": "Trabajos procesados por resultado",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -72,7 +120,7 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "Job Duration (p50 / p95 / p99)",
+      "title": "Duración de la conversión (p50 / p95 / p99)",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
@@ -96,6 +144,109 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Encolados frente a convertidos",
+      "description": "La API encola y responde; los workers consumen a su ritmo. La separación entre las dos líneas es el desacople asíncrono siendo visible.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(convert_jobs_enqueued_total[5m]))",
+          "legendFormat": "encolados"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(convert_jobs_processed_total{status=\"success\"}[5m]))",
+          "legendFormat": "convertidos"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Bundles por veredicto de validación",
+      "description": "Un documento que no pasa la validación y un trabajo que se cae son fallas muy distintas; esta métrica separa la primera, que en el panel de fallos no se distinguiría.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (verdict) (convert_bundles_validated_total)",
+          "legendFormat": "{{verdict}}"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "text" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "valid" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "valid_with_warnings" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "invalid" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Idempotencia y reintentos",
+      "description": "«Entregas duplicadas descartadas» contando hacia arriba es la idempotencia funcionando, no un problema: cada una es una conversión repetida que no ocurrió. «Descartados» sí es una falla definitiva.",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(convert_jobs_skipped_total)",
+          "legendFormat": "entregas duplicadas descartadas"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(convert_jobs_retried_total)",
+          "legendFormat": "reintentos automáticos"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(convert_jobs_dead_lettered_total)",
+          "legendFormat": "descartados (intentos agotados)"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "text" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "descartados (intentos agotados)" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      }
     }
   ]
 }
