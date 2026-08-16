@@ -179,6 +179,69 @@ el rechazo por formato ocurre antes incluso de la petición.
 | `converted` | Bundle publicado |
 | `failed` | Falló (con botón de reintento) |
 
+## Idempotencia y reintentos
+
+### Una entrega duplicada no convierte dos veces
+
+Antes de convertir nada, el worker **reclama el trabajo** con una transición
+atómica en Postgres. Gana un solo reclamante; cualquier otra entrega del mismo
+trabajo recibe «no reclamado», hace `ack` y no toca el convertidor. Es lo que
+exige el §6: un único efecto final y, a lo sumo, un bundle publicado.
+
+Qué estados se pueden reclamar:
+
+| Estado del trabajo | ¿Reclamable? | Por qué |
+| --- | --- | --- |
+| `queued` | Sí | Trabajo nuevo, o devuelto a la espera para otro intento |
+| `failed` | Sí | El intento anterior terminó y perdió; reintentar es el objetivo |
+| `converting` | Solo si el mensaje viene marcado como reentrega | RabbitMQ solo reentrega cuando el canal del consumidor anterior ya no existe, así que un trabajo atascado en `converting` con un mensaje reentregado es uno cuyo worker se murió a mitad. Negarlo dejaría el archivo varado para siempre |
+| `converted` | Nunca | El bundle ya está publicado, y publicar un segundo es justo lo que el §6 prohíbe |
+
+La distinción de la tercera fila es la que hace que esto no sea una elección
+entre idempotencia y recuperación: **un doble `publish` no viene marcado como
+reentrega**, así que sigue quedando en un solo efecto.
+
+Se puede demostrar publicando el mismo mensaje dos veces desde la consola de
+RabbitMQ. Ayuda que el `.zip` ya sea determinista.
+
+### Reintentos automáticos acotados
+
+El pipeline corre sobre tres colas duraderas:
+
+```
+file_conversion         trabajos por convertir
+file_conversion.retry   espera entre intentos; vence hacia la principal
+file_conversion.dead    intentos agotados, para inspección
+```
+
+`file_conversion.retry` no tiene consumidor: lleva un TTL de mensaje y
+devuelve por dead-letter a la cola principal cuando vence. Es la forma
+estándar de retrasar una reentrega en RabbitMQ sin plugins.
+
+**La espera es del atributo de la cola, no de cada mensaje**, y eso es
+deliberado: un TTL por mensaje en una cola compartida solo expira los de la
+cabeza, así que una espera larga bloquearía todas las cortas que quedaran
+detrás. El costo es que la espera es fija y no exponencial.
+
+Al agotar `WORKER_MAX_ATTEMPTS` intentos, el mensaje va a la cola de
+descartes. El archivo y el trabajo quedan en `failed` con el motivo, que es lo
+que ve el usuario y sobre lo que actúa el **reintento manual** del §5.2 —que
+sigue existiendo y crea un trabajo nuevo, con su propio presupuesto de
+intentos, enlazado al anterior por `retry_of`.
+
+Entre intento e intento el trabajo vuelve a `queued` y el archivo a `ready`.
+Sin eso, el archivo se quedaría en `failed` entre intentos y tanto la API como
+el dashboard reportarían un fallo definitivo de un trabajo que sigue en
+proceso —el dashboard incluso dejaría de sondear, porque `failed` es terminal
+para él—.
+
+Las tres situaciones tienen su métrica, precisamente porque significan cosas
+distintas: `convert_jobs_skipped_total` (entregas duplicadas descartadas: es
+la idempotencia funcionando, no un problema), `convert_jobs_retried_total` y
+`convert_jobs_dead_lettered_total{reason}`.
+
+`make queue` muestra el estado de las tres colas.
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -276,7 +339,9 @@ flowchart TD
     F -- Sí --> G["Archivo pasa a 'ready'\nse encola un trabajo en RabbitMQ"]
     G --> H(["API responde de inmediato,\nsin URL de descarga: todavía no hay bundle"])
     G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
-    I --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
+    I --> I1{"¿Logra reclamar el trabajo?\n(transición atómica en Postgres)"}
+    I1 -- No --> I2(["Entrega duplicada o trabajo ya hecho:\nack y nada más — un solo efecto final"])
+    I1 -- Sí --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
     J --> K{"¿Qué formato tiene?"}
     K -- ".md" --> L1["Encabezados '#' y subrayados"]
     K -- ".html" --> L2["Se renderiza como Markdown:\nh1-h6 → encabezados"]
@@ -303,13 +368,17 @@ flowchart TD
     P --> Q{"¿La conversión tuvo éxito?"}
     Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
     Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
+    S --> S1{"¿Quedan intentos?"}
+    S1 -- Sí --> S2["Trabajo vuelve a 'queued' y archivo a 'ready';\nel mensaje espera en file_conversion.retry"]
+    S2 -. vence el TTL .-> I
+    S1 -- No --> S3(["El mensaje va a file_conversion.dead.\nEl archivo queda 'failed' con el motivo"])
     R --> U["El frontend sondea GET /api/files hasta que\nno queda nada en 'ready' ni 'converting',\ny habilita la descarga"]
     U --> U0["El usuario descarga por la API\nGET /api/files/:id/bundle"]
     U0 --> U1
     U1{"¿Es el dueño\ny está publicado?"}
     U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
     U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
-    S --> T["El usuario puede pedir un reintento\nPOST /api/files/:id/retry"]
+    S3 --> T["El usuario puede pedir un reintento manual\nPOST /api/files/:id/retry — crea un trabajo nuevo"]
     T -.-> I
 ```
 
@@ -359,6 +428,19 @@ exige servir la aplicación por HTTPS.
 El backend en Go lee estas variables desde el entorno del proceso; ninguna
 tiene valor de configuración escrito en el código. La lista completa, con sus
 valores por defecto, está en `backend/internal/config/config.go`.
+
+Las que gobiernan los workers:
+
+| Variable | Por defecto | Qué controla |
+| --- | --- | --- |
+| `WORKER_REPLICAS` | `2` | Contenedores de worker (`make scale SERVICE=worker N=4`) |
+| `WORKER_CONCURRENCY` | `2` | Trabajos en paralelo dentro de cada contenedor |
+| `WORKER_MAX_ATTEMPTS` | `3` | Intentos antes de descartar. Con `1` no hay reintentos automáticos |
+| `WORKER_RETRY_DELAY_SECONDS` | `10` | Espera entre intentos |
+
+`WORKER_RETRY_DELAY_SECONDS` es un atributo de la cola `file_conversion.retry`,
+así que cambiarlo solo surte efecto sobre una cola que todavía no exista: hay
+que borrarla, o `make reset`.
 
 ## Comandos make
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type MinioConfig struct {
@@ -40,6 +41,16 @@ type Config struct {
 	// parallel (cmd/worker only; the API never consumes). Total throughput is
 	// this times the number of worker containers.
 	WorkerConcurrency int
+
+	// WorkerMaxAttempts caps how many times a job is converted before it is
+	// given up on and dead-lettered. 1 disables automatic retries; the user's
+	// manual retry is unaffected either way.
+	WorkerMaxAttempts int
+
+	// WorkerRetryDelay is how long a failed job waits before the next
+	// attempt. It is a property of the retry queue, so changing it only takes
+	// effect on a queue that does not exist yet (see internal/convert).
+	WorkerRetryDelay time.Duration
 
 	Minio MinioConfig
 }
@@ -105,6 +116,22 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("WORKER_CONCURRENCY must be at least 1")
 	}
 
+	maxAttempts, err := intEnv("WORKER_MAX_ATTEMPTS", 3)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxAttempts < 1 {
+		return Config{}, fmt.Errorf("WORKER_MAX_ATTEMPTS must be at least 1")
+	}
+
+	retryDelaySeconds, err := intEnv("WORKER_RETRY_DELAY_SECONDS", 10)
+	if err != nil {
+		return Config{}, err
+	}
+	if retryDelaySeconds < 1 {
+		return Config{}, fmt.Errorf("WORKER_RETRY_DELAY_SECONDS must be at least 1")
+	}
+
 	return Config{
 		Env:         os.Getenv("APP_ENV"),
 		Port:        stringEnv("PORT", "3000"),
@@ -115,6 +142,8 @@ func Load() (Config, error) {
 		RabbitMQURL: rabbitMQURL,
 
 		WorkerConcurrency: workerConcurrency,
+		WorkerMaxAttempts: maxAttempts,
+		WorkerRetryDelay:  time.Duration(retryDelaySeconds) * time.Second,
 
 		Minio: MinioConfig{
 			Endpoint:  minioEndpoint,

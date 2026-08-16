@@ -32,6 +32,75 @@ type JobRepository interface {
 	LatestForFile(ctx context.Context, fileID string) (Job, error)
 }
 
+// Claim atomically takes ownership of a conversion job, and is what makes a
+// duplicated queue delivery harmless: whichever worker wins the UPDATE
+// converts, and every other delivery of the same job is told claimed=false
+// and simply acks. Without it, RabbitMQ redelivering a message would convert
+// the same document twice (§6: one final effect, at most one published
+// bundle).
+//
+// Which states may be claimed:
+//
+//   - 'queued'  — a fresh job, or one put back by Requeue for another attempt.
+//   - 'failed'  — the previous attempt finished and lost; retrying is the point.
+//   - 'converting' — only when the broker marked the delivery as redelivered.
+//     RabbitMQ only redelivers once the previous consumer's channel is gone,
+//     so a job stuck in 'converting' with a redelivered message is one whose
+//     worker died mid-conversion; refusing it would strand the file forever.
+//     A merely duplicated *publish* is not flagged as redelivered, so this
+//     does not weaken the guarantee above.
+//   - 'converted' is never claimable: the bundle is already published, and
+//     publishing a second one is exactly what §6 forbids.
+//
+// attempts is the post-increment count, so the first successful claim of a
+// job returns 1.
+func (r *PgJobRepository) Claim(ctx context.Context, jobID string, redelivered bool) (attempts int, claimed bool, err error) {
+	err = r.pool.QueryRow(ctx,
+		`
+		UPDATE conversion_jobs
+		SET status = 'converting',
+		    attempts = attempts + 1,
+		    error = NULL,
+		    finished_at = NULL
+		WHERE id = $1
+		  AND status <> 'converted'
+		  AND (status <> 'converting' OR $2)
+		RETURNING attempts
+		`,
+		jobID, redelivered,
+	).Scan(&attempts)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("claim conversion job: %w", err)
+	}
+
+	return attempts, true, nil
+}
+
+// Requeue puts a job that failed but will be retried automatically back into
+// a waiting state, along with its file. Without it the file would sit at
+// 'failed' between attempts, and both the API and the dashboard would report
+// a final failure for work that is still in progress - the dashboard would
+// even stop polling, since 'failed' is a terminal state to it.
+//
+// The file goes back to 'ready' rather than 'converting' because that is what
+// it actually is: waiting in the queue for a worker, not being converted.
+func (r *PgJobRepository) Requeue(ctx context.Context, jobID, fileID string, lastErr string) error {
+	batch := &pgx.Batch{}
+	batch.Queue(
+		`UPDATE conversion_jobs SET status = 'queued', error = $2, finished_at = NULL WHERE id = $1`,
+		jobID, lastErr,
+	)
+	batch.Queue(`UPDATE files SET status = 'ready' WHERE id = $1`, fileID)
+
+	if err := r.pool.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("requeue conversion job: %w", err)
+	}
+	return nil
+}
+
 type PgJobRepository struct {
 	pool *pgxpool.Pool
 }

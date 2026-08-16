@@ -89,6 +89,11 @@ CREATE TABLE IF NOT EXISTS conversion_jobs (
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'converting', 'converted', 'failed')),
 
+    -- Veces que un worker ha reclamado este trabajo. Lo incrementa el propio
+    -- reclamo atómico, así que cuenta intentos reales de conversión y no
+    -- entregas de la cola: una reentrega que no logra reclamar no suma.
+    attempts INT NOT NULL DEFAULT 0,
+
     error TEXT,
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

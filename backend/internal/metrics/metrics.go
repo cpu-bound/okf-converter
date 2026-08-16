@@ -43,6 +43,27 @@ var (
 		Buckets: prometheus.DefBuckets,
 	})
 
+	// JobsSkippedTotal counts deliveries dropped because the job was already
+	// claimed - duplicated publishes and redeliveries of work that is done.
+	// A non-zero value here is idempotency working, not a problem.
+	JobsSkippedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "convert_jobs_skipped_total",
+		Help: "Queue deliveries dropped because the job was already claimed.",
+	})
+
+	// JobsRetriedTotal counts failed attempts scheduled for another try.
+	JobsRetriedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "convert_jobs_retried_total",
+		Help: "Failed conversion attempts scheduled for an automatic retry.",
+	})
+
+	// JobsDeadLetteredTotal counts messages parked in the dead-letter queue,
+	// by why they got there ("exhausted" or "malformed").
+	JobsDeadLetteredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "convert_jobs_dead_lettered_total",
+		Help: "Messages moved to the dead-letter queue, by reason.",
+	}, []string{"reason"})
+
 	// BundlesValidatedTotal counts built bundles by validation verdict
 	// ("valid", "valid_with_warnings", "invalid"), so the share of documents
 	// that fail validation is visible separately from the share of jobs that

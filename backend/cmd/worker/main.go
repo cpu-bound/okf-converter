@@ -62,14 +62,20 @@ func run() error {
 	}
 	defer rabbitConn.Close()
 
+	jobRepo := files.NewPgJobRepository(dbPool)
+
 	converter := convert.NewBundleConverter(
 		store,
 		files.NewPgFileRepository(dbPool),
 		files.NewPgOutputRepository(dbPool),
-		files.NewPgJobRepository(dbPool),
+		jobRepo,
 	)
 
-	consumer, err := convert.NewConsumer(rabbitConn, converter, cfg.WorkerConcurrency)
+	consumer, err := convert.NewConsumer(rabbitConn, converter, jobRepo, convert.ConsumerConfig{
+		Workers:     cfg.WorkerConcurrency,
+		MaxAttempts: cfg.WorkerMaxAttempts,
+		RetryDelay:  cfg.WorkerRetryDelay,
+	})
 	if err != nil {
 		return err
 	}
@@ -79,7 +85,11 @@ func run() error {
 		return err
 	}
 
-	slog.Info("worker iniciado", "concurrency", cfg.WorkerConcurrency)
+	slog.Info("worker iniciado",
+		"concurrency", cfg.WorkerConcurrency,
+		"max_attempts", cfg.WorkerMaxAttempts,
+		"retry_delay", cfg.WorkerRetryDelay.String(),
+	)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: metricsHandler()}
 
