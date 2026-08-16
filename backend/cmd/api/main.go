@@ -115,6 +115,7 @@ func run() error {
 	mux.Handle("GET /api/files/{id}", requireAuth(http.HandlerFunc(fileHandlers.Status)))
 	mux.Handle("POST /api/files/{id}/retry", requireAuth(http.HandlerFunc(fileHandlers.Retry)))
 	mux.Handle("GET /api/files/{id}/outputs", requireAuth(http.HandlerFunc(fileHandlers.Outputs)))
+	mux.Handle("GET /api/files/{id}/bundle", requireAuth(http.HandlerFunc(fileHandlers.DownloadBundle)))
 
 	handler := middleware.Recover(httpx.CORS(cfg.FrontendURL, mux))
 

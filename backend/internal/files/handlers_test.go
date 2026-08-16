@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,12 +22,16 @@ import (
 type fakeFileRepository struct {
 	records map[string]FileRecord
 	files   map[string]File
+	// owners mirrors the WHERE user_id = $2 the real query carries: without
+	// it the fake would answer for any caller and the handlers' ownership
+	// checks would be untested.
+	owners  map[string]string
 	nextID  int
 	deleted []string
 }
 
 func newFakeFileRepository() *fakeFileRepository {
-	return &fakeFileRepository{records: map[string]FileRecord{}, files: map[string]File{}}
+	return &fakeFileRepository{records: map[string]FileRecord{}, files: map[string]File{}, owners: map[string]string{}}
 }
 
 func (f *fakeFileRepository) Create(ctx context.Context, userID, objectKey, originalName, contentType string, size int64) (File, error) {
@@ -35,15 +40,24 @@ func (f *fakeFileRepository) Create(ctx context.Context, userID, objectKey, orig
 	file := File{ID: id, OriginalName: originalName, ContentType: contentType, Size: size, Status: "pending"}
 	f.files[id] = file
 	f.records[id] = FileRecord{ID: id, ObjectKey: objectKey, OriginalName: originalName, ContentType: contentType, Size: size, Status: "pending"}
+	f.owners[id] = userID
 	return file, nil
 }
 
 func (f *fakeFileRepository) FindForUser(ctx context.Context, id, userID string) (FileRecord, error) {
 	rec, ok := f.records[id]
-	if !ok {
+	if !ok || f.owners[id] != userID {
 		return FileRecord{}, ErrNotFound
 	}
 	return rec, nil
+}
+
+// setValidation records the verdict a conversion would have written, so the
+// handlers' explanations of an unpublished bundle can be exercised.
+func (f *fakeFileRepository) setValidation(id, verdict string) {
+	rec := f.records[id]
+	rec.Validation = &verdict
+	f.records[id] = rec
 }
 
 func (f *fakeFileRepository) MarkReady(ctx context.Context, id string) (File, error) {
@@ -152,6 +166,10 @@ type fakeStorage struct {
 	statErr     error
 	removed     []string
 	presignedOK string
+	// objects, when set, makes StatObject and GetObject answer per key. The
+	// download path needs real bytes to stream; the upload-confirm path only
+	// ever stats, so it keeps using statSize/statErr.
+	objects map[string][]byte
 }
 
 func (s *fakeStorage) EnsureBucket(ctx context.Context) error { return nil }
@@ -165,6 +183,13 @@ func (s *fakeStorage) PresignedGetURL(ctx context.Context, objectKey string, exp
 }
 
 func (s *fakeStorage) StatObject(ctx context.Context, objectKey string) (storage.ObjectInfo, error) {
+	if s.objects != nil {
+		data, ok := s.objects[objectKey]
+		if !ok {
+			return storage.ObjectInfo{}, errors.New("object not found")
+		}
+		return storage.ObjectInfo{Size: int64(len(data))}, nil
+	}
 	if s.statErr != nil {
 		return storage.ObjectInfo{}, s.statErr
 	}
@@ -177,6 +202,13 @@ func (s *fakeStorage) RemoveObject(ctx context.Context, objectKey string) error 
 }
 
 func (s *fakeStorage) GetObject(ctx context.Context, objectKey string) (io.ReadCloser, error) {
+	if s.objects != nil {
+		data, ok := s.objects[objectKey]
+		if !ok {
+			return nil, errors.New("object not found")
+		}
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
@@ -307,8 +339,7 @@ func TestConfirmHandler(t *testing.T) {
 		}
 
 		var resp struct {
-			File      File   `json:"file"`
-			ResultURL string `json:"resultUrl"`
+			File File `json:"file"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode response: %v", err)
@@ -316,11 +347,15 @@ func TestConfirmHandler(t *testing.T) {
 		if resp.File.Status != "ready" {
 			t.Errorf("status = %q, want %q", resp.File.Status, "ready")
 		}
-		if resp.ResultURL != store.presignedOK {
-			t.Errorf("resultUrl = %q, want %q", resp.ResultURL, store.presignedOK)
-		}
 		if !enqueued {
 			t.Error("expected EnqueueConversion to be called")
+		}
+
+		// No download URL is handed out here: conversion hasn't run, and
+		// whether there will ever be a bundle to download is validation's
+		// call, not this handler's.
+		if strings.Contains(rec.Body.String(), "resultUrl") {
+			t.Errorf("confirm handed back a download URL before conversion:\n%s", rec.Body.String())
 		}
 	})
 
@@ -465,8 +500,7 @@ func TestRetryHandlerIsIdempotent(t *testing.T) {
 	}
 
 	var firstResp, secondResp struct {
-		File      File   `json:"file"`
-		ResultURL string `json:"resultUrl"`
+		File File `json:"file"`
 	}
 	if err := json.Unmarshal(first.Body.Bytes(), &firstResp); err != nil {
 		t.Fatalf("decode first response: %v", err)
@@ -474,7 +508,7 @@ func TestRetryHandlerIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(second.Body.Bytes(), &secondResp); err != nil {
 		t.Fatalf("decode second response: %v", err)
 	}
-	if firstResp.File.Status != secondResp.File.Status || firstResp.ResultURL != secondResp.ResultURL {
+	if firstResp.File.Status != secondResp.File.Status {
 		t.Errorf("responses diverged: %+v vs %+v", firstResp, secondResp)
 	}
 
@@ -487,6 +521,150 @@ func TestRetryHandlerIsIdempotent(t *testing.T) {
 
 	if got := len(jobs.byFile[file.ID]); got != 2 {
 		t.Errorf("got %d conversion_jobs rows for file, want 2 (original + retry)", got)
+	}
+}
+
+// downloadHarness sets up a file whose bundle archive is already in storage,
+// so the download path can be driven end to end.
+func downloadHarness(t *testing.T, owner string, status string) (*Handlers, *fakeFileRepository, File, []byte) {
+	t.Helper()
+
+	const archive = "PK\x03\x04 contenido del bundle empaquetado"
+
+	repo := newFakeFileRepository()
+	file, _ := repo.Create(context.Background(), owner, "user-1/abc.pdf", "report.pdf", "application/pdf", 1024)
+	repo.setStatus(file.ID, status)
+
+	store := &fakeStorage{objects: map[string][]byte{
+		storage.ResultObjectName("user-1/abc.pdf"): []byte(archive),
+	}}
+
+	return NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), store), repo, file, []byte(archive)
+}
+
+func download(h *Handlers, fileID string, user auth.User) *httptest.ResponseRecorder {
+	req := requestAsUser(http.MethodGet, "/api/files/"+fileID+"/bundle", "", user)
+	req.SetPathValue("id", fileID)
+	rec := httptest.NewRecorder()
+	h.DownloadBundle(rec, req)
+	return rec
+}
+
+func TestDownloadBundleStreamsThePublishedArchive(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+	h, _, file, archive := downloadHarness(t, user.ID, "converted")
+
+	rec := download(h, file.ID, user)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Body.Bytes(); !bytes.Equal(got, archive) {
+		t.Errorf("body = %q, want the stored archive %q", got, archive)
+	}
+
+	wantHeaders := map[string]string{
+		"Content-Type":           "application/zip",
+		"Content-Length":         strconv.Itoa(len(archive)),
+		"Content-Disposition":    `attachment; filename="report.zip"`,
+		"X-Content-Type-Options": "nosniff",
+	}
+	for name, want := range wantHeaders {
+		if got := rec.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// §6: a bundle that was not published cannot be downloaded, whatever the
+// reason it was not published.
+func TestDownloadBundleRefusesUnpublishedBundles(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+
+	tests := []struct {
+		name       string
+		status     string
+		validation string
+		wantInBody string
+	}{
+		{"aún convirtiendo", "converting", "", "todavía se está generando"},
+		{"subida sin confirmar", "pending", "", "todavía no se ha confirmado"},
+		{"conversión fallida", "failed", "", "La conversión falló"},
+		{"bundle inválido", "failed", "invalid", "no superó la validación"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, repo, file, _ := downloadHarness(t, user.ID, tt.status)
+			if tt.validation != "" {
+				repo.setValidation(file.ID, tt.validation)
+			}
+
+			rec := download(h, file.ID, user)
+
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusConflict, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantInBody) {
+				t.Errorf("body = %s, want it to explain %q", rec.Body.String(), tt.wantInBody)
+			}
+			// Nothing of the archive may leak into a refused response, even
+			// though the object is sitting right there in storage.
+			if strings.Contains(rec.Body.String(), "contenido del bundle") {
+				t.Error("the archive leaked into a refused download")
+			}
+		})
+	}
+}
+
+// Multi-user isolation: someone else's bundle is reported as missing, not as
+// forbidden - whether a given id exists is not this user's business.
+func TestDownloadBundleIsScopedToTheOwner(t *testing.T) {
+	h, _, file, _ := downloadHarness(t, "user-1", "converted")
+
+	rec := download(h, file.ID, auth.User{ID: "user-2"})
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "contenido del bundle") {
+		t.Error("another user's archive leaked")
+	}
+}
+
+// A published file whose archive is missing from storage has to fail with a
+// status code, not with an empty 200 - once the body starts the response can
+// no longer say anything went wrong.
+func TestDownloadBundleFailsWhenTheArchiveIsMissing(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+
+	repo := newFakeFileRepository()
+	file, _ := repo.Create(context.Background(), user.ID, "user-1/abc.pdf", "report.pdf", "application/pdf", 1024)
+	repo.setStatus(file.ID, "converted")
+
+	h := NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), &fakeStorage{objects: map[string][]byte{}})
+
+	rec := download(h, file.ID, user)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+// The individual files of a bundle are gated exactly like the archive: a
+// bundle that was never published is not on offer piecemeal either.
+func TestOutputsRefusesUnpublishedBundles(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+	h, _, file, _ := downloadHarness(t, user.ID, "converting")
+
+	req := requestAsUser(http.MethodGet, "/api/files/"+file.ID+"/outputs", "", user)
+	req.SetPathValue("id", file.ID)
+	rec := httptest.NewRecorder()
+
+	h.Outputs(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusConflict, rec.Body.String())
 	}
 }
 

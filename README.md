@@ -123,6 +123,30 @@ El veredicto completo queda también dentro del propio bundle, en la sección
 `## Validación` de `log.md`, con todas las reglas —las superadas incluidas—,
 que es lo que pide el §3 del enunciado sobre trazabilidad.
 
+## Descarga del bundle
+
+`GET /api/files/{id}/bundle` entrega el `.zip`. La descarga pasa por la API y
+no por una URL prefirmada, porque es el único punto donde se pueden exigir las
+dos condiciones del §6:
+
+- **que quien pide sea el dueño del archivo** — una URL prefirmada, una vez
+  entregada, le responde a quien la tenga;
+- **que el bundle esté publicado** — es decir, que haya pasado la validación.
+
+La API no carga el archivo en memoria: lo transmite por flujo desde MinIO, así
+que un bundle grande le cuesta un buffer y no su tamaño completo.
+
+| Situación | Respuesta |
+| --- | --- |
+| Bundle publicado | `200` con el `.zip` |
+| El archivo es de otro usuario | `404` (no `403`: si un id existe o no, no es asunto de quien pregunta) |
+| Todavía convirtiendo | `409` con el motivo |
+| Conversión fallida o bundle inválido | `409` explicando cuál de las dos |
+
+Los archivos individuales del bundle (`GET /api/files/{id}/outputs`) están
+tras la misma puerta: un bundle que no se publicó tampoco se ofrece por
+partes.
+
 ## Arquitectura
 
 | Servicio     | Tecnología                         | Propósito                                     |
@@ -217,8 +241,8 @@ flowchart TD
     D --> E["Frontend confirma la subida\nPOST /api/files/:id/confirm"]
     E --> F{"¿El tamaño subido\ncoincide con el declarado?"}
     F -- No --> F1(["Se elimina el objeto y el registro\nError 409"])
-    F -- Sí --> G["Archivo pasa a 'ready'\nse firma la URL de descarga del resultado (24h)\nse encola un trabajo en RabbitMQ"]
-    G --> H(["API responde de inmediato con resultUrl,\naunque la conversión todavía no ocurrió"])
+    F -- Sí --> G["Archivo pasa a 'ready'\nse encola un trabajo en RabbitMQ"]
+    G --> H(["API responde de inmediato,\nsin URL de descarga: todavía no hay bundle"])
     G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
     I --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
     J --> K{"¿Qué formato tiene?"}
@@ -245,8 +269,12 @@ flowchart TD
     X -- "válido / válido con advertencias" --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
     O --> P["Se empaqueta el bundle en un .zip\ny se guarda en la clave ya prefirmada"]
     P --> Q{"¿La conversión tuvo éxito?"}
-    Q -- Sí --> R(["Archivo 'converted'\nel resultUrl entregado antes ya sirve el .zip"])
+    Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
     Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
+    R --> U["El usuario descarga por la API\nGET /api/files/:id/bundle"]
+    U --> U1{"¿Es el dueño\ny está publicado?"}
+    U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
+    U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
     S --> T["El usuario puede pedir un reintento\nPOST /api/files/:id/retry"]
     T -.-> I
 ```

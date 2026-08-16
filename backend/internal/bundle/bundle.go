@@ -106,10 +106,7 @@ func Build(src Source, units []Unit, log *Log) (Bundle, error) {
 	}
 
 	title := documentTitle(src.OriginalName)
-	root := slugify(title)
-	if root == "" {
-		root = "bundle"
-	}
+	root := RootName(src.OriginalName)
 
 	concepts := nameConcepts(units)
 	log.Step("%d unidad(es) de conocimiento nombradas y ordenadas", len(concepts))
@@ -406,6 +403,18 @@ func severityLabel(s Severity) string {
 		return "advertencia"
 	}
 	return "error"
+}
+
+// RootName is the folder name the bundle for originalName is packaged under.
+// Exported so the handler that serves the download can name the .zip after
+// the folder it contains without the bundle having to be rebuilt or the name
+// stored anywhere - the same reasoning behind the deterministic object keys.
+func RootName(originalName string) string {
+	root := slugify(documentTitle(originalName))
+	if root == "" {
+		return "bundle"
+	}
+	return root
 }
 
 // documentTitle derives a human title from the uploaded file name: drop the

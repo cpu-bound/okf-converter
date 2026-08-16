@@ -33,7 +33,7 @@ export class DashboardComponent implements OnDestroy {
   uploadError = signal('');
 
   fileId = signal<string | null>(null);
-  resultUrl = signal<string | null>(null);
+  bundleUrl = signal<string | null>(null);
   retrying = signal(false);
   copied = signal(false);
 
@@ -60,19 +60,19 @@ export class DashboardComponent implements OnDestroy {
     this.uploadProgress.set(0);
   }
 
-  // The frontend's job ends the moment it has the presigned download URL -
-  // there is no follow-up status call. The backend hands that URL back in
-  // the same confirm response that pushes the conversion job, before the
-  // job has even run, so there is nothing left for the client to track:
-  // the URL itself, tried whenever the user chooses, is the only signal of
-  // "is it ready" this UI needs.
+  // The download now goes through the API (GET /api/files/:id/bundle), which
+  // only serves a bundle that passed validation and belongs to the caller.
+  // Until then the endpoint answers 409 with the reason, so this UI still
+  // has no status tracking of its own - clicking the link too early explains
+  // itself rather than downloading. Polling and a gated button belong to the
+  // next change.
   uploadFile(file: File): void {
     this.uploading.set(true);
     this.uploadProgress.set(0);
     this.uploadComplete.set(false);
     this.uploadError.set('');
     this.fileId.set(null);
-    this.resultUrl.set(null);
+    this.bundleUrl.set(null);
 
     this.http
       .post<{
@@ -126,7 +126,6 @@ export class DashboardComponent implements OnDestroy {
         switchMap(uploadedFile =>
           this.http.post<{
             file: { id: string };
-            resultUrl: string;
           }>(`/api/files/${uploadedFile.id}/confirm`, {})
         )
       )
@@ -136,7 +135,7 @@ export class DashboardComponent implements OnDestroy {
           this.uploadComplete.set(true);
           this.selectedFile.set(null);
           this.fileId.set(confirmed.file.id);
-          this.resultUrl.set(confirmed.resultUrl);
+          this.bundleUrl.set(this.bundleUrlFor(confirmed.file.id));
         },
         error: error => {
           console.error('Upload failed:', error);
@@ -148,11 +147,17 @@ export class DashboardComponent implements OnDestroy {
       });
   }
 
-  // A manual, user-triggered action (not the result of the frontend
-  // watching the file's status) - if the download link didn't work, the
-  // user can ask for a fresh conversion attempt. The retry response is the
-  // same shape as confirm's: a resultUrl handed back immediately, not a
-  // status to keep watching.
+  // The download URL is a pure function of the file id, so it never has to
+  // be handed back by the API or refreshed: it is the same address before,
+  // during and after the conversion - what changes is what the API answers
+  // there.
+  private bundleUrlFor(fileId: string): string {
+    return `${location.origin}/api/files/${fileId}/bundle`;
+  }
+
+  // A manual, user-triggered action (not the result of the frontend watching
+  // the file's status) - if the download didn't work, the user can ask for a
+  // fresh conversion attempt.
   retryConversion(): void {
     const fileId = this.fileId();
     if (!fileId) {
@@ -164,12 +169,11 @@ export class DashboardComponent implements OnDestroy {
     this.http
       .post<{
         file: { id: string };
-        resultUrl: string;
       }>(`/api/files/${fileId}/retry`, {})
       .subscribe({
         next: retried => {
           this.retrying.set(false);
-          this.resultUrl.set(retried.resultUrl);
+          this.bundleUrl.set(this.bundleUrlFor(retried.file.id));
         },
         error: error => {
           console.error('Retry failed:', error);
@@ -178,8 +182,8 @@ export class DashboardComponent implements OnDestroy {
       });
   }
 
-  copyResultUrl(): void {
-    const url = this.resultUrl();
+  copyBundleUrl(): void {
+    const url = this.bundleUrl();
     if (!url) {
       return;
     }

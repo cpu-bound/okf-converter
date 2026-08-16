@@ -97,10 +97,11 @@
   </div>
 }
 
-@if (resultUrl(); as url) {
+@if (bundleUrl(); as url) {
   <div class="result-panel">
     <p class="result-panel-label">
-      Cuando esté listo, puedes descargar el bundle con este enlace:
+      Cuando la conversión termine y el bundle pase la validación, podrás
+      descargarlo aquí:
     </p>
 
     <div class="result-url">
@@ -112,13 +113,13 @@
         (click)="selectUrlInput($event)"
       />
 
-      <button type="button" class="copy-button" (click)="copyResultUrl()">
+      <button type="button" class="copy-button" (click)="copyBundleUrl()">
         {{ copied() ? '¡Copiado!' : 'Copiar' }}
       </button>
     </div>
 
     <a class="primary-button" [href]="url" target="_blank" rel="noopener noreferrer">
-      Descargar resultados
+      Descargar bundle
     </a>
 
     <button
@@ -127,7 +128,7 @@
       [disabled]="retrying()"
       (click)="retryConversion()"
     >
-      {{ retrying() ? 'Reintentando...' : "¿El enlace no funciona todavía? Reintentar conversión" }}
+      {{ retrying() ? 'Reintentando...' : "¿La descarga todavía no funciona? Reintentar conversión" }}
     </button>
   </div>
 }
