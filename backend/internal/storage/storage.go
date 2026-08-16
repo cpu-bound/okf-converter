@@ -174,14 +174,26 @@ func CreateObjectName(userID, originalName string) string {
 }
 
 // ResultObjectName derives the deterministic key for a source object's
-// bundled result zip, e.g. "<userID>/<uuid>.<ext>" -> "<userID>/<uuid>-result.zip".
+// packaged bundle, e.g. "<userID>/<uuid>.<ext>" -> "<userID>/<uuid>-result.zip".
 // Being a pure function of objectKey (rather than a stored value) lets both
-// the handler that presigns the download URL and the worker that writes the
-// zip agree on the key without any coordination.
+// the handler that serves the download and the worker that writes the
+// archive agree on the key without any coordination - and makes a re-run
+// overwrite its own result instead of accumulating copies.
 func ResultObjectName(objectKey string) string {
-	base := objectKey
+	return stripExt(objectKey) + "-result.zip"
+}
+
+// BundleObjectPrefix derives the deterministic prefix the bundle's
+// individual files live under, e.g. "<userID>/<uuid>-bundle", so index.md is
+// readable on its own without downloading the whole archive. Deterministic
+// for the same reason as ResultObjectName.
+func BundleObjectPrefix(objectKey string) string {
+	return stripExt(objectKey) + "-bundle"
+}
+
+func stripExt(objectKey string) string {
 	if idx := strings.LastIndex(objectKey, "."); idx != -1 {
-		base = objectKey[:idx]
+		return objectKey[:idx]
 	}
-	return base + "-result.zip"
+	return objectKey
 }

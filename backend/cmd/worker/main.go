@@ -62,7 +62,7 @@ func run() error {
 	}
 	defer rabbitConn.Close()
 
-	converter := convert.NewSplitConverter(
+	converter := convert.NewBundleConverter(
 		store,
 		files.NewPgFileRepository(dbPool),
 		files.NewPgOutputRepository(dbPool),

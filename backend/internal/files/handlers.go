@@ -225,8 +225,9 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, http.StatusOK, map[string]any{"file": file, "resultUrl": resultURL})
 }
 
-// Outputs lists the converted chunk files produced for a source file, each
-// with a short-lived presigned download URL.
+// Outputs lists the files of the bundle produced for a source file - in
+// reading order, starting with index.md - each with a short-lived presigned
+// download URL.
 func (h *Handlers) Outputs(w http.ResponseWriter, r *http.Request) {
 	user, ok := middleware.UserFromContext(r.Context())
 	if !ok {
@@ -259,7 +260,7 @@ func (h *Handlers) Outputs(w http.ResponseWriter, r *http.Request) {
 			httpx.Error(w, http.StatusInternalServerError, "Something went wrong.")
 			return
 		}
-		outputs = append(outputs, Output{ID: rec.ID, ChunkIndex: rec.ChunkIndex, Size: rec.Size, DownloadURL: url})
+		outputs = append(outputs, Output{ID: rec.ID, Name: rec.Name, Position: rec.Position, Size: rec.Size, DownloadURL: url})
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]any{"outputs": outputs})

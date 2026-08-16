@@ -1,9 +1,40 @@
 # OKF Converter
 
-OKF Converter es una aplicación web para convertir documentos subidos en
-fragmentos de texto plano. Un usuario se autentica, sube un archivo, y el
-backend extrae su texto y lo divide en salidas `.txt` por párrafo que se
-pueden descargar individualmente.
+OKF Converter es una aplicación web multiusuario que convierte documentos en
+bundles de conocimiento en formato OKF. Un usuario se autentica y sube un
+archivo; la API responde de inmediato con un identificador de trabajo y la
+conversión ocurre en segundo plano, en workers independientes. El resultado
+es un bundle: una carpeta autocontenida con un índice, una bitácora de la
+conversión y un documento Markdown por cada unidad lógica del documento
+original.
+
+## El bundle
+
+```
+notas-de-clase/
+├── index.md              navegación y datos del bundle
+├── log.md                trazabilidad de la conversión
+├── 01-introduccion.md    un documento por unidad lógica,
+├── 02-metodologia.md     numerado en el orden del original
+└── 03-conclusiones.md
+```
+
+`index.md` enumera y enlaza los conceptos en el orden del documento de
+origen, junto con los datos del bundle (documento original, tipo, tamaño,
+número de unidades y trabajo que lo produjo). `log.md` registra, con marca de
+tiempo, cada operación de la conversión y una tabla de las unidades
+detectadas con su procedencia. Cada concepto abre con su título, lleva el
+contenido de su unidad y cierra con enlaces al índice y a sus vecinos, de
+modo que el bundle se puede recorrer completo desde cualquier archivo.
+
+Un resultado exitoso nunca es un Markdown suelto: o se generan todos los
+archivos del bundle, o el trabajo falla. Un documento breve sin divisiones
+produce un bundle igual de válido, con `index.md`, `log.md` y un único
+concepto.
+
+Los archivos del bundle se guardan además como objetos individuales en MinIO,
+así que se puede leer `index.md` sin descargar el paquete completo, y el
+bundle entero se empaqueta como un `.zip` con una sola carpeta raíz.
 
 ## Arquitectura
 
@@ -86,10 +117,10 @@ flowchart LR
 
 ### Flujo de datos y proceso de decisión
 
-Desde que un usuario sube un archivo hasta que puede descargar el resultado,
+Desde que un usuario sube un archivo hasta que puede descargar el bundle,
 incluyendo las decisiones que toma el sistema en cada paso (validación de
-tamaño, formato del documento, tamaño de los fragmentos y resultado final
-de la conversión).
+tamaño, formato del documento, tamaño de los bloques y resultado final de la
+conversión).
 
 ```mermaid
 flowchart TD
@@ -104,17 +135,19 @@ flowchart TD
     G -. async .-> I["Un worker del pool en 'api'\nconsume el trabajo de RabbitMQ"]
     I --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
     J --> K{"¿Qué formato tiene?"}
-    K -- ".txt" --> L1["Se divide por líneas en blanco → párrafos"]
-    K -- ".csv" --> L2["Cada fila del CSV → un fragmento"]
+    K -- ".txt" --> L1["Se divide por líneas en blanco → bloques"]
+    K -- ".csv" --> L2["Cada fila del CSV → un bloque"]
     K -- ".pdf" --> L3["Se extrae el texto página por página\n(reconstruyendo espacios por posición de carácter)\ny luego se divide igual que .txt"]
-    L1 --> M{"¿Algún fragmento supera\nlos 20.000 bytes?"}
+    L1 --> M{"¿Algún bloque supera\nlos 20.000 bytes?"}
     L2 --> M
     L3 --> M
     M -- Sí --> M1["Se corta en bloques adicionales\nsin romper caracteres UTF-8"]
-    M -- No --> N["Se mantiene como un solo fragmento"]
-    M1 --> O["Cada fragmento se guarda como .txt en MinIO\ny se registra en la base de datos"]
-    N --> O
-    O --> P["Se arma un .zip con todos los fragmentos\ny se guarda en la clave ya prefirmada"]
+    M -- No --> N["Se mantiene como un solo bloque"]
+    M1 --> U["Cada bloque pasa a ser una unidad lógica,\ncon título derivado de su primera línea"]
+    N --> U
+    U --> V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
+    V --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
+    O --> P["Se empaqueta el bundle en un .zip\ny se guarda en la clave ya prefirmada"]
     P --> Q{"¿La conversión tuvo éxito?"}
     Q -- Sí --> R(["Archivo 'converted'\nel resultUrl entregado antes ya sirve el .zip"])
     Q -- No --> S(["Archivo 'failed'"])
@@ -198,7 +231,8 @@ backend/         Backend en Go (un módulo, dos binarios)
   cmd/worker/     Punto de entrada del worker: consume trabajos y convierte
   internal/
     auth/          Registro, login, JWT, hashing de contraseñas
-    convert/        Consumidor de la cola, extracción de texto, división en párrafos
+    bundle/         Construcción del bundle OKF: index.md, log.md y conceptos
+    convert/        Cola, extracción de texto, detección de unidades, pipeline
     files/          Handlers de subida/confirmación/salidas
     storage/        Wrapper del cliente de MinIO
     middleware/      Guard de autenticación, recuperación de panics

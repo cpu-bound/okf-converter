@@ -96,8 +96,8 @@ func newFakeOutputRepository() *fakeOutputRepository {
 	return &fakeOutputRepository{records: map[string][]OutputRecord{}}
 }
 
-func (f *fakeOutputRepository) Create(ctx context.Context, fileID, objectKey string, chunkIndex int, size int64) error {
-	f.records[fileID] = append(f.records[fileID], OutputRecord{ID: objectKey, ObjectKey: objectKey, ChunkIndex: chunkIndex, Size: size})
+func (f *fakeOutputRepository) Create(ctx context.Context, fileID, objectKey, name string, position int, size int64) error {
+	f.records[fileID] = append(f.records[fileID], OutputRecord{ID: objectKey, ObjectKey: objectKey, Name: name, Position: position, Size: size})
 	return nil
 }
 

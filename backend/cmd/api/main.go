@@ -82,7 +82,14 @@ func run() error {
 			return
 		}
 
-		job := convert.Job{JobID: convertJob.ID, FileID: file.ID, ObjectKey: objectKey, ContentType: file.ContentType, OriginalName: file.OriginalName}
+		job := convert.Job{
+			JobID:        convertJob.ID,
+			FileID:       file.ID,
+			ObjectKey:    objectKey,
+			ContentType:  file.ContentType,
+			OriginalName: file.OriginalName,
+			Size:         file.Size,
+		}
 		if err := publisher.Enqueue(ctx, job); err != nil {
 			log.Printf("failed to enqueue convert job for file %s: %v", file.ID, err)
 		}

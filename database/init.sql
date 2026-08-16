@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS files_user_id_idx
     ON files(user_id);
 
+-- Un registro por archivo del bundle generado (index.md, log.md y cada
+-- documento de concepto), en el orden en que se leen.
 CREATE TABLE IF NOT EXISTS file_outputs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
@@ -50,7 +52,11 @@ CREATE TABLE IF NOT EXISTS file_outputs (
 
     object_key TEXT NOT NULL UNIQUE,
 
-    chunk_index INT NOT NULL,
+    -- Nombre dentro del bundle, p. ej. 'index.md' o '02-metodologia.md'.
+    name TEXT NOT NULL,
+
+    -- Orden de lectura dentro del bundle, empezando en 0.
+    position INT NOT NULL,
 
     size BIGINT NOT NULL,
 
