@@ -5,7 +5,7 @@
   "tags": ["okf-converter"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "10s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -74,16 +74,16 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Trabajos pendientes",
-      "description": "Encolados menos los que ya salieron del sistema. Un trabajo sale al convertirse bien o al agotar sus intentos; los intentos fallidos intermedios no cuentan, porque el trabajo sigue pendiente. Deriva si se reinicia un proceso, porque los contadores vuelven a cero.",
+      "title": "Trabajos en cola",
+      "description": "Profundidad real de las colas, tal como la reporta RabbitMQ. Es un gauge, no una resta de contadores: los contadores viven en cada réplica de worker, así que al reiniciar una vuelven a cero y la resta se va a negativo. Incluye la cola de reintentos, porque un mensaje esperando su siguiente intento sigue siendo trabajo pendiente; los descartados no, porque ya no espera nadie por ellos.",
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(convert_jobs_enqueued_total) - sum(convert_jobs_processed_total{status=\"success\"}) - sum(convert_jobs_dead_lettered_total)",
-          "legendFormat": "pendientes"
+          "expr": "sum(rabbitmq_detailed_queue_messages{queue=~\"file_conversion|file_conversion.retry\"})",
+          "legendFormat": "en cola"
         }
       ],
       "fieldConfig": {

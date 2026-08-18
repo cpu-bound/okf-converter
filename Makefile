@@ -152,6 +152,18 @@ install-frontend: ## Instala las dependencias de npm del frontend
 	$(NODE_RUN) npm ci
 
 # --------------------------------------------------------------------------
+# Pruebas contra el stack levantado
+# --------------------------------------------------------------------------
+
+.PHONY: smoke
+smoke: ## Prueba de punta a punta contra el stack (necesita 'make up')
+	@bash scripts/smoke.sh
+
+.PHONY: tolerancia
+tolerancia: ## Idempotencia, reintentos y descartes (DETIENE MinIO un rato)
+	@bash scripts/tolerancia.sh
+
+# --------------------------------------------------------------------------
 # Agregados
 # --------------------------------------------------------------------------
 

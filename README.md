@@ -283,6 +283,7 @@ dashboard *Conversión de documentos*
 | `convert_jobs_skipped_total` | Workers | Entregas duplicadas descartadas |
 | `convert_jobs_retried_total` | Workers | Intentos fallidos reprogramados |
 | `convert_jobs_dead_lettered_total{reason}` | Workers | Mensajes descartados definitivamente |
+| `rabbitmq_detailed_queue_messages{queue}` | RabbitMQ | Profundidad real de cada cola |
 
 Están separadas a propósito porque significan cosas distintas. Un documento
 que **no pasa la validación** y un trabajo que **se cae** son fallas de
@@ -293,6 +294,14 @@ problema: cada unidad es una conversión repetida que **no** ocurrió.
 Que la API y los workers expongan las suyas por separado es lo que permite
 ver la diferencia entre lo encolado y lo procesado como un respaldo real de
 la cola, en vez de quedar escondida dentro de un solo proceso.
+
+El trabajo pendiente, en cambio, **no** se deriva restando contadores. Se
+intentó y estaba mal: los contadores viven en cada réplica de worker, así que
+al reiniciar una vuelven a cero y la resta se va a negativo. El trabajo
+pendiente es un valor instantáneo, no un acumulado, y quien lo conoce es
+RabbitMQ: el plugin `rabbitmq_prometheus` viene activo de fábrica en la imagen
+y publica la profundidad de cada cola como gauge en el puerto 15692. El
+dashboard lee de ahí.
 
 ## Arquitectura
 
@@ -525,9 +534,45 @@ que borrarla, o `make reset`.
 | `make urls` / `make config` | URLs y credenciales en uso / compose resuelto |
 | `make test` | Pruebas de backend y frontend |
 | `make check` | `go vet` + compilación + todas las pruebas |
+| `make smoke` | Prueba de punta a punta contra el stack levantado |
+| `make tolerancia` | Idempotencia, reintentos y descartes (detiene MinIO un rato) |
 
 Los targets de pruebas y compilación corren dentro de contenedores, así que
 no hace falta tener Go ni Node instalados en la máquina.
+
+## Probar el stack levantado
+
+Las pruebas unitarias (`make test`) no tocan la infraestructura: corren contra
+dobles. Lo que de verdad hay que demostrar —que el trabajo se convierte una
+sola vez, que un fallo se reintenta y acaba descartado, que un usuario no ve
+los archivos de otro— solo se ve con todo levantado. Para eso hay dos guiones
+en `scripts/`, y ambos pasan por la API igual que lo haría el navegador.
+
+```bash
+make up
+make smoke        # ~20 s
+make tolerancia   # ~3 min: detiene MinIO a propósito
+```
+
+`make smoke` registra dos cuentas, rechaza un `.zip` con 415, sube un `.md`,
+espera a que un worker lo convierta, descarga el `.zip` y verifica por dentro
+que estén `index.md`, `log.md`, los conceptos, el frontmatter con `type` y la
+sección de validación en la bitácora. Cierra comprobando el aislamiento: que
+la segunda cuenta no vea nada en `GET /api/files` y que tanto el detalle como
+la descarga de un id ajeno devuelvan `404`.
+
+`make tolerancia` cubre lo que no se ve desde la interfaz. Republica un
+mensaje ya procesado por la API de gestión de RabbitMQ y comprueba las dos
+cosas a la vez: que suba `convert_jobs_skipped_total` **y** que no aparezca un
+segundo bundle. Luego detiene MinIO, reencola, y sondea hasta que el trabajo
+agota sus intentos y el mensaje aterriza en `file_conversion.dead`. Al
+restaurar MinIO verifica que el trabajo se recupera —que es lo que hace el
+botón «Reintentar»— y termina escalando los workers.
+
+Sondean en vez de esperar un tiempo fijo, a propósito: Prometheus raspa cada
+15 s y un intento fallido tarda lo que tarde el cliente de S3 en rendirse, que
+es bastante más que el retardo entre reintentos. Con un `sleep` fijo la prueba
+falla sin que falle nada.
 
 ## Estructura del proyecto
 
@@ -549,6 +594,7 @@ backend/         Backend en Go (un módulo, dos binarios)
 frontend/        App de Angular (login/registro/dashboard)
 database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
+scripts/         Pruebas contra el stack levantado (smoke, tolerancia)
 ```
 
 ## Desarrollo del backend

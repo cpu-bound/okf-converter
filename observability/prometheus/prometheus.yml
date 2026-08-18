@@ -19,3 +19,20 @@ scrape_configs:
         type: A
         port: 3000
         refresh_interval: 15s
+
+  # La profundidad de las colas la reporta el propio RabbitMQ: el plugin
+  # rabbitmq_prometheus viene activo de fábrica en la imagen y escucha en
+  # 15692. Se raspa el endpoint «detailed» porque el agregado no separa por
+  # cola, y aquí importa distinguir la principal de la de reintentos y la de
+  # descartes.
+  #
+  # Esto no es un lujo: el trabajo pendiente es un valor instantáneo, y
+  # derivarlo restando contadores de los workers da un número que se va a
+  # negativo en cuanto una réplica se reinicia y sus contadores vuelven a
+  # cero. RabbitMQ lo publica como gauge, que es lo que realmente es.
+  - job_name: rabbitmq
+    metrics_path: /metrics/detailed
+    params:
+      family: ["queue_coarse_metrics"]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
