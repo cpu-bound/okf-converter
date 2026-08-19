@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Manual de integración con la API de facturación</title>
+</head>
+<body>
+
+<h1>Manual de integración con la API de facturación</h1>
+
+<p>Este manual describe cómo un sistema externo emite, consulta y anula
+comprobantes a través de la API. Está dirigido a equipos de integración con
+experiencia previa en servicios HTTP.</p>
+
+<h2>Autenticación</h2>
+
+<p>Todas las llamadas requieren un token de acceso emitido por el servicio de
+identidad. El token viaja en la cabecera <code>Authorization</code> con el
+esquema <code>Bearer</code> y caduca a los sesenta minutos.</p>
+
+<p>No hay refresco silencioso: cuando el token caduca, la integración debe
+volver a solicitarlo con sus credenciales de cliente. Reintentar la llamada
+original con un token vencido devuelve <code>401</code> indefinidamente.</p>
+
+<h2>Emisión de comprobantes</h2>
+
+<p>La emisión es asíncrona. El sistema acepta el comprobante, responde
+<code>202</code> con un identificador de seguimiento, y lo procesa por
+detrás. La respuesta inmediata no significa que el comprobante sea válido:
+significa que fue recibido.</p>
+
+<h3>Consulta del estado</h3>
+
+<p>El identificador de seguimiento permite consultar el estado del
+comprobante. Los estados posibles son <em>recibido</em>, <em>procesando</em>,
+<em>aceptado</em> y <em>rechazado</em>. Solo los dos últimos son
+definitivos.</p>
+
+<h3>Reintentos del cliente</h3>
+
+<p>Si la emisión devuelve un error de red, el cliente puede reintentar con el
+mismo identificador de idempotencia. El servicio reconoce el reintento y
+devuelve el resultado original en lugar de emitir un segundo comprobante.</p>
+
+<h2>Anulación</h2>
+
+<p>Un comprobante aceptado se anula con una nota de crédito, no borrándolo.
+La anulación es una operación contable con su propio comprobante, y queda
+sujeta a los mismos plazos que la emisión.</p>
+
+<h2>Límites de uso</h2>
+
+<p>La API admite sesenta llamadas por minuto y por cliente. Al superarlo
+responde <code>429</code> con una cabecera <code>Retry-After</code>. Esa
+cabecera es la fuente de verdad: reintentar antes de lo que indica prolonga
+el bloqueo en lugar de acortarlo.</p>
+
+<h2>Ambiente de pruebas</h2>
+
+<p>El ambiente de pruebas es funcionalmente idéntico al de producción, pero
+los comprobantes que emite no tienen validez fiscal. Las credenciales de los
+dos ambientes no son intercambiables.</p>
+
+</body>
+</html>
