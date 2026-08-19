@@ -56,12 +56,6 @@ func run() error {
 		return err
 	}
 
-	rabbitConn, err := convert.Dial(cfg.RabbitMQURL)
-	if err != nil {
-		return err
-	}
-	defer rabbitConn.Close()
-
 	jobRepo := files.NewPgJobRepository(dbPool)
 
 	converter := convert.NewBundleConverter(
@@ -71,7 +65,7 @@ func run() error {
 		jobRepo,
 	)
 
-	consumer, err := convert.NewConsumer(rabbitConn, converter, jobRepo, convert.ConsumerConfig{
+	consumer, err := convert.NewConsumer(cfg.RabbitMQURL, converter, jobRepo, convert.ConsumerConfig{
 		Workers:     cfg.WorkerConcurrency,
 		MaxAttempts: cfg.WorkerMaxAttempts,
 		RetryDelay:  cfg.WorkerRetryDelay,

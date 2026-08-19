@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -303,5 +304,62 @@ func TestProcessParksTheJobWhenTheClaimFails(t *testing.T) {
 	}
 	if h.ack.acks != 1 {
 		t.Errorf("acks = %d, want 1", h.ack.acks)
+	}
+}
+
+// drain returning is the signal the whole reconnection loop hangs on: when
+// the broker goes away RabbitMQ closes the deliveries channel, and if the
+// worker treated that as a normal shutdown it would sit there consuming
+// nothing - container up, health green, queue growing.
+func TestDrainReturnsWhenTheBrokerClosesTheDeliveries(t *testing.T) {
+	h := newConsumerHarness(3)
+	h.consumer.workers = 2
+
+	deliveries := make(chan amqp.Delivery)
+
+	done := make(chan struct{})
+	go func() {
+		h.consumer.drain(context.Background(), deliveries)
+		close(done)
+	}()
+
+	body, err := json.Marshal(Job{JobID: "job-1", FileID: "file-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries <- amqp.Delivery{Acknowledger: h.ack, Body: body}
+
+	// This is what a dropped connection looks like from inside the process.
+	close(deliveries)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not return after the deliveries channel closed, so no reconnect would ever be attempted")
+	}
+
+	if h.conv.calls != 1 {
+		t.Errorf("converted %d jobs, want 1 - the delivery sent before the close must still be processed", h.conv.calls)
+	}
+}
+
+// A cancelled context is the other way a session ends, and it must not be
+// confused with a dropped connection: this one means shut down, not reconnect.
+func TestDrainReturnsWhenTheContextIsCancelled(t *testing.T) {
+	h := newConsumerHarness(3)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.consumer.drain(ctx, make(chan amqp.Delivery))
+		close(done)
+	}()
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain did not return after its context was cancelled")
 	}
 }

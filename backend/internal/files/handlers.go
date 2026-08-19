@@ -21,6 +21,12 @@ const (
 	presignedURLExpiry = 15 * time.Minute
 )
 
+// enqueueFailedMessage is what the user sees when the job could not be
+// queued. It says the document is safe and the action is repeatable, because
+// both are true: the upload is already stored, and only the scheduling
+// failed.
+const enqueueFailedMessage = "No se pudo programar la conversión en este momento. El documento quedó guardado: vuelve a intentarlo en unos segundos."
+
 // Handlers serves the upload side of the API. Both func fields are seams the
 // conversion pipeline hooks into (wired in main.go), kept as plain fields
 // rather than required constructor arguments so this package has no
@@ -34,7 +40,11 @@ type Handlers struct {
 	// EnqueueConversion is called to push a conversion job for a file - on
 	// first upload confirmation (retryOf nil) and on retry (retryOf pointing
 	// at the job attempt being retried).
-	EnqueueConversion func(ctx context.Context, file File, objectKey string, retryOf *string)
+	//
+	// It returns an error because a job that never reached the queue is not
+	// a background detail: no worker will ever pick it up, so answering 200
+	// would leave the user watching a file that cannot progress.
+	EnqueueConversion func(ctx context.Context, file File, objectKey string, retryOf *string) error
 
 	// SupportedFormat reports whether the pipeline can convert a document,
 	// so an unconvertible upload is refused before a presigned URL is even
@@ -149,7 +159,10 @@ func (h *Handlers) Confirm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.EnqueueConversion != nil {
-		h.EnqueueConversion(ctx, file, record.ObjectKey, nil)
+		if err := h.EnqueueConversion(ctx, file, record.ObjectKey, nil); err != nil {
+			httpx.Error(w, http.StatusServiceUnavailable, enqueueFailedMessage)
+			return
+		}
 	}
 
 	// No download URL is handed back here. Conversion has not run, so there
@@ -260,7 +273,10 @@ func (h *Handlers) Retry(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if h.EnqueueConversion != nil {
-			h.EnqueueConversion(ctx, file, record.ObjectKey, retryOf)
+			if err := h.EnqueueConversion(ctx, file, record.ObjectKey, retryOf); err != nil {
+				httpx.Error(w, http.StatusServiceUnavailable, enqueueFailedMessage)
+				return
+			}
 		}
 	}
 

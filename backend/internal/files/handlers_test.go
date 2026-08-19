@@ -331,11 +331,12 @@ func TestConfirmHandler(t *testing.T) {
 		h := NewHandlers(repo, newFakeOutputRepository(), jobs, store)
 
 		var enqueued bool
-		h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) {
+		h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) error {
 			enqueued = true
 			if retryOf != nil {
 				t.Errorf("retryOf = %v, want nil on first confirm", *retryOf)
 			}
+			return nil
 		}
 
 		req := requestAsUser(http.MethodPost, "/api/files/"+file.ID+"/confirm", "", user)
@@ -487,11 +488,12 @@ func TestRetryHandlerIsIdempotent(t *testing.T) {
 	// Retry only decides *whether* to call it (via the CAS) and *what*
 	// retryOf to pass.
 	var enqueuedRetryOf []*string
-	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) {
+	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) error {
 		if _, err := jobs.Create(ctx, f.ID, retryOf); err != nil {
 			t.Fatalf("jobs.Create: %v", err)
 		}
 		enqueuedRetryOf = append(enqueuedRetryOf, retryOf)
+		return nil
 	}
 
 	run := func() *httptest.ResponseRecorder {
@@ -726,8 +728,9 @@ func TestRetryHandlerNoOpWhenNotFailed(t *testing.T) {
 	h := NewHandlers(repo, newFakeOutputRepository(), jobs, store)
 
 	var enqueued bool
-	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) {
+	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) error {
 		enqueued = true
+		return nil
 	}
 
 	req := requestAsUser(http.MethodPost, "/api/files/"+file.ID+"/retry", "", user)
@@ -743,5 +746,65 @@ func TestRetryHandlerNoOpWhenNotFailed(t *testing.T) {
 	}
 	if len(jobs.byFile[file.ID]) != 0 {
 		t.Errorf("expected no conversion_jobs rows to be created, got %d", len(jobs.byFile[file.ID]))
+	}
+}
+
+// A job that never reached the queue is not a background detail: no worker
+// will ever claim it, so the request that created it must not report success.
+// Before this, the failure was only logged, the API answered 200, and the
+// dashboard polled a file that could not possibly progress until it gave up.
+func TestConfirmReportsThatTheJobCouldNotBeQueued(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+
+	repo := newFakeFileRepository()
+	file, _ := repo.Create(context.Background(), user.ID, "user-1/abc.md", "notas.md", "text/markdown", 1024)
+	store := &fakeStorage{statSize: 1024}
+	h := NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), store)
+
+	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) error {
+		return errors.New("channel/connection is not open")
+	}
+
+	req := requestAsUser(http.MethodPost, "/api/files/"+file.ID+"/confirm", "", user)
+	req.SetPathValue("id", file.ID)
+	rec := httptest.NewRecorder()
+
+	h.Confirm(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+	}
+
+	// The broker's own wording would mean nothing to the person who just
+	// uploaded a file, and the reassurance matters: the document is stored,
+	// only its scheduling failed.
+	if strings.Contains(rec.Body.String(), "channel/connection") {
+		t.Errorf("the broker's error leaked to the client:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "documento quedó guardado") {
+		t.Errorf("the message does not tell the user the upload survived:\n%s", rec.Body.String())
+	}
+}
+
+func TestRetryReportsThatTheJobCouldNotBeQueued(t *testing.T) {
+	user := auth.User{ID: "user-1"}
+
+	repo := newFakeFileRepository()
+	file, _ := repo.Create(context.Background(), user.ID, "user-1/abc.md", "notas.md", "text/markdown", 1024)
+	repo.setStatus(file.ID, "failed")
+	h := NewHandlers(repo, newFakeOutputRepository(), newFakeJobRepository(), &fakeStorage{})
+
+	h.EnqueueConversion = func(ctx context.Context, f File, objectKey string, retryOf *string) error {
+		return errors.New("channel/connection is not open")
+	}
+
+	req := requestAsUser(http.MethodPost, "/api/files/"+file.ID+"/retry", "", user)
+	req.SetPathValue("id", file.ID)
+	rec := httptest.NewRecorder()
+
+	h.Retry(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (body=%s)", rec.Code, http.StatusServiceUnavailable, rec.Body.String())
 	}
 }

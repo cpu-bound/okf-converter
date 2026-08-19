@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -36,14 +37,105 @@ const (
 	deadQueueName  = queueName + ".dead"
 )
 
-// Dial opens a connection to the RabbitMQ broker. The caller owns the
-// returned connection and is responsible for closing it.
-func Dial(url string) (*amqp.Connection, error) {
-	conn, err := amqp.Dial(url)
-	if err != nil {
-		return nil, fmt.Errorf("dial rabbitmq: %w", err)
+// broker owns the AMQP connection and hands out a channel that was open when
+// it was asked for, redialing whenever the previous one died. Both halves of
+// the pipeline sit on top of one.
+//
+// It exists because a channel opened once at startup only works until the
+// first network hiccup. After that every publish fails with "channel/
+// connection is not open" and nothing ever repairs it: a process that had
+// been up for a day would keep accepting uploads and silently convert none
+// of them, answering 200 the whole time. An idle publisher is the most
+// exposed of all, because nothing reveals the dead channel until someone
+// uses it.
+type broker struct {
+	url string
+
+	// setup runs on every freshly opened channel. Each side declares what it
+	// needs, so a reconnect restores the topology this process depends on
+	// instead of assuming the broker kept it across the outage.
+	setup func(*amqp.Channel) error
+
+	mu   sync.Mutex
+	conn *amqp.Connection
+	ch   *amqp.Channel
+}
+
+func newBroker(url string, setup func(*amqp.Channel) error) *broker {
+	return &broker{url: url, setup: setup}
+}
+
+// channel returns a healthy channel, opening a connection first if there is
+// none. "Healthy" is only true as of this instant - the link can drop between
+// this call and the publish that follows - which is why callers retry once
+// rather than trusting the check.
+func (b *broker) channel() (*amqp.Channel, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.ch != nil && !b.ch.IsClosed() {
+		return b.ch, nil
 	}
-	return conn, nil
+	b.ch = nil
+
+	if b.conn == nil || b.conn.IsClosed() {
+		if b.conn != nil {
+			b.conn.Close()
+		}
+		conn, err := amqp.Dial(b.url)
+		if err != nil {
+			b.conn = nil
+			return nil, fmt.Errorf("dial rabbitmq: %w", err)
+		}
+		b.conn = conn
+	}
+
+	ch, err := b.conn.Channel()
+	if err != nil {
+		// The connection reported itself open but would not give a channel,
+		// so drop it: asking a corpse for another channel just fails again.
+		b.conn.Close()
+		b.conn = nil
+		return nil, fmt.Errorf("open channel: %w", err)
+	}
+
+	if err := b.setup(ch); err != nil {
+		ch.Close()
+		return nil, err
+	}
+
+	b.ch = ch
+	return ch, nil
+}
+
+// reset drops the cached channel so the next call to channel opens a new one.
+// Called after a failed publish, where the error is itself the evidence that
+// the channel is gone.
+func (b *broker) reset() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ch != nil {
+		b.ch.Close()
+		b.ch = nil
+	}
+}
+
+func (b *broker) close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.ch != nil {
+		b.ch.Close()
+		b.ch = nil
+	}
+	if b.conn != nil {
+		err := b.conn.Close()
+		b.conn = nil
+		if err != nil {
+			return fmt.Errorf("close rabbitmq connection: %w", err)
+		}
+	}
+	return nil
 }
 
 // declareQueue declares the durable main job queue. Both sides declare it, so
@@ -85,21 +177,18 @@ func declareRetryTopology(ch *amqp.Channel, retryDelay time.Duration) error {
 // is what lets cmd/api and cmd/worker be different binaries - the API has
 // no Converter and cannot process anything even by accident.
 type Publisher struct {
-	channel *amqp.Channel
+	broker *broker
 }
 
-func NewPublisher(conn *amqp.Connection) (*Publisher, error) {
-	ch, err := conn.Channel()
-	if err != nil {
-		return nil, fmt.Errorf("open channel: %w", err)
-	}
-
-	if err := declareQueue(ch); err != nil {
-		ch.Close()
+// NewPublisher connects to the broker and declares the job queue. It fails if
+// the broker is unreachable right now, so a bad URL stops the process at
+// startup instead of surfacing hours later as an upload that never converts.
+func NewPublisher(url string) (*Publisher, error) {
+	b := newBroker(url, declareQueue)
+	if _, err := b.channel(); err != nil {
 		return nil, err
 	}
-
-	return &Publisher{channel: ch}, nil
+	return &Publisher{broker: b}, nil
 }
 
 // Enqueue publishes job as a persistent message so it survives a broker
@@ -111,24 +200,38 @@ func (p *Publisher) Enqueue(ctx context.Context, job Job) error {
 		return fmt.Errorf("marshal job: %w", err)
 	}
 
-	err = p.channel.PublishWithContext(ctx, "", queueName, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		Body:         body,
-	})
-	if err != nil {
-		return fmt.Errorf("publish job: %w", err)
+	// Two attempts, not a loop. The first can land on a channel that died
+	// while it sat idle - the common case, and one nothing reveals until it
+	// is used - and the second runs on a channel opened just now. If that
+	// fails too the broker is genuinely unreachable, and the caller has to
+	// hear about it rather than have it buried in a log line.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		ch, err := p.broker.channel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		err = ch.PublishWithContext(ctx, "", queueName, false, false, amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		})
+		if err == nil {
+			metrics.JobsEnqueuedTotal.Inc()
+			return nil
+		}
+
+		lastErr = err
+		p.broker.reset()
 	}
 
-	metrics.JobsEnqueuedTotal.Inc()
-	return nil
+	return fmt.Errorf("publish job: %w", lastErr)
 }
 
 func (p *Publisher) Close() error {
-	if err := p.channel.Close(); err != nil {
-		return fmt.Errorf("close channel: %w", err)
-	}
-	return nil
+	return p.broker.close()
 }
 
 // Consumer is the worker's half of the queue: it consumes jobs and runs
@@ -138,9 +241,9 @@ func (p *Publisher) Close() error {
 // hands each job to exactly one of them, so adding containers adds
 // throughput without touching the API.
 type Consumer struct {
-	channel *amqp.Channel
-	conv    Converter
-	claims  JobClaimer
+	broker *broker
+	conv   Converter
+	claims JobClaimer
 
 	workers     int
 	maxAttempts int
@@ -185,41 +288,46 @@ type ConsumerConfig struct {
 // number of unacked deliveries in flight to Workers so jobs are spread evenly
 // across consumers instead of one prefetching everything - which is what
 // makes scaling out the worker container actually distribute load.
-func NewConsumer(conn *amqp.Connection, conv Converter, claims JobClaimer, cfg ConsumerConfig) (*Consumer, error) {
-	ch, err := conn.Channel()
-	if err != nil {
-		return nil, fmt.Errorf("open channel: %w", err)
-	}
-
-	if err := ch.Qos(cfg.Workers, 0, false); err != nil {
-		ch.Close()
-		return nil, fmt.Errorf("set qos: %w", err)
-	}
-
-	if err := declareQueue(ch); err != nil {
-		ch.Close()
-		return nil, err
-	}
-
-	if err := declareRetryTopology(ch, cfg.RetryDelay); err != nil {
-		ch.Close()
-		return nil, err
-	}
-
-	return &Consumer{
-		channel:     ch,
+func NewConsumer(url string, conv Converter, claims JobClaimer, cfg ConsumerConfig) (*Consumer, error) {
+	c := &Consumer{
 		conv:        conv,
 		claims:      claims,
 		workers:     cfg.Workers,
 		maxAttempts: cfg.MaxAttempts,
-		publish: func(ctx context.Context, queue string, body []byte) error {
-			return ch.PublishWithContext(ctx, "", queue, false, false, amqp.Publishing{
-				ContentType:  "application/json",
-				DeliveryMode: amqp.Persistent,
-				Body:         body,
-			})
-		},
-	}, nil
+	}
+
+	// The prefetch cap and the queue declarations are re-applied on every
+	// channel, including the ones opened after a reconnect: they are
+	// properties of this consumer's session, not one-time setup.
+	c.broker = newBroker(url, func(ch *amqp.Channel) error {
+		if err := ch.Qos(cfg.Workers, 0, false); err != nil {
+			return fmt.Errorf("set qos: %w", err)
+		}
+		if err := declareQueue(ch); err != nil {
+			return err
+		}
+		return declareRetryTopology(ch, cfg.RetryDelay)
+	})
+
+	// Resolved per call rather than bound to one channel, so a retry
+	// scheduled after a reconnect goes out on the live channel.
+	c.publish = func(ctx context.Context, queue string, body []byte) error {
+		ch, err := c.broker.channel()
+		if err != nil {
+			return err
+		}
+		return ch.PublishWithContext(ctx, "", queue, false, false, amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			Body:         body,
+		})
+	}
+
+	if _, err := c.broker.channel(); err != nil {
+		return nil, err
+	}
+
+	return c, nil
 }
 
 // Start spawns `workers` goroutines fanned out over a single deliveries
@@ -229,30 +337,109 @@ func NewConsumer(conn *amqp.Connection, conv Converter, claims JobClaimer, cfg C
 // result has already been recorded. It returns immediately; the returned
 // group finishes once ctx is done and the channel is closed.
 func (c *Consumer) Start(ctx context.Context) (*errgroup.Group, error) {
-	deliveries, err := c.channel.Consume(queueName, "", false, false, false, false, nil)
+	// The first subscription has to succeed. A worker that cannot consume at
+	// all is a misconfiguration, and failing here reports it at startup
+	// instead of leaving a container that looks healthy and does nothing.
+	deliveries, err := c.consume()
 	if err != nil {
-		return nil, fmt.Errorf("consume: %w", err)
+		return nil, err
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
+	g.Go(func() error {
+		for {
+			c.drain(ctx, deliveries)
+
+			if ctx.Err() != nil {
+				return nil
+			}
+
+			// The deliveries channel closed on its own, which means the link
+			// to the broker went down. Resubscribing is the whole point: a
+			// worker that quietly stops consuming keeps its container up,
+			// its health green and its queue growing.
+			slog.Warn("conversión: se perdió la conexión con RabbitMQ, reconectando")
+			c.broker.reset()
+
+			deliveries, err = c.resubscribe(ctx)
+			if err != nil {
+				return nil
+			}
+		}
+	})
+
+	return g, nil
+}
+
+// drain fans one subscription out over `workers` goroutines and returns once
+// the deliveries channel closes or ctx is done - so its return is precisely
+// the signal that the session ended, however it ended.
+func (c *Consumer) drain(ctx context.Context, deliveries <-chan amqp.Delivery) {
+	var wg sync.WaitGroup
+
 	for i := 0; i < c.workers; i++ {
-		g.Go(func() error {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for {
 				select {
 				case <-ctx.Done():
-					return nil
+					return
 				case d, ok := <-deliveries:
 					if !ok {
-						return nil
+						return
 					}
 					c.process(ctx, d)
 				}
 			}
-		})
+		}()
 	}
 
-	return g, nil
+	wg.Wait()
+}
+
+func (c *Consumer) consume() (<-chan amqp.Delivery, error) {
+	ch, err := c.broker.channel()
+	if err != nil {
+		return nil, err
+	}
+
+	deliveries, err := ch.Consume(queueName, "", false, false, false, false, nil)
+	if err != nil {
+		return nil, fmt.Errorf("consume: %w", err)
+	}
+	return deliveries, nil
+}
+
+// resubscribe retries until it has a working subscription or ctx is done. The
+// wait doubles up to a ceiling so a broker that stays down produces a slow
+// trickle of attempts rather than a dial loop.
+func (c *Consumer) resubscribe(ctx context.Context) (<-chan amqp.Delivery, error) {
+	const maxDelay = 30 * time.Second
+	delay := time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+
+		deliveries, err := c.consume()
+		if err == nil {
+			slog.Info("conversión: reconectado a RabbitMQ")
+			return deliveries, nil
+		}
+
+		slog.Error("conversión: no se pudo reconectar a RabbitMQ",
+			"error", err, "siguiente_intento_en", delay)
+		c.broker.reset()
+
+		if delay < maxDelay {
+			delay *= 2
+		}
+	}
 }
 
 // process handles one delivery. Every path through it ends in an ack: the
@@ -385,12 +572,9 @@ func decodeJob(body []byte) (Job, error) {
 	return job, nil
 }
 
-// Close closes the channel, which also closes the deliveries channel handed
-// to any goroutines started by Start, letting them drain their current job
+// Close drops the connection, which also closes the deliveries channel handed
+// to the goroutines started by Start, letting them finish their current job
 // and exit.
 func (c *Consumer) Close() error {
-	if err := c.channel.Close(); err != nil {
-		return fmt.Errorf("close channel: %w", err)
-	}
-	return nil
+	return c.broker.close()
 }

@@ -265,6 +265,28 @@ la idempotencia funcionando, no un problema), `convert_jobs_retried_total` y
 
 `make queue` muestra el estado de las tres colas.
 
+### Si el broker se cae
+
+Una conexión AMQP abierta al arrancar solo sirve hasta el primer corte de red.
+Después, cada publicación falla con `channel/connection is not open` y nada la
+repara: el proceso sigue en pie, con su health en verde, sin encolar ni
+consumir nada. Es un fallo especialmente traicionero del lado del API, porque
+un publicador ocioso no da ninguna señal hasta que alguien sube un archivo.
+
+Por eso ni el API ni los workers guardan un canal fijo. Ambos piden un canal
+sano en cada uso y lo reabren cuando el anterior murió, redeclarando las colas
+—un reconecte no puede dar por hecho que el broker conservó la topología—. El
+API reintenta la publicación una vez, porque el primer intento puede caer
+justo en el canal que acaba de morir. Los workers, además, vuelven a
+suscribirse con espera creciente hasta 30 s: un worker que deja de consumir en
+silencio es peor que uno que se cae, porque nadie se entera.
+
+Y si aun así no se pudo encolar, **el usuario se entera**: la API responde
+`503` con un mensaje que dice que el documento quedó guardado, y marca el
+archivo como `failed`, que es el único estado desde el que el dashboard ofrece
+reintentar. Antes respondía `200` y el archivo se quedaba sondeando un trabajo
+que nadie iba a recoger jamás.
+
 ## Observabilidad
 
 Prometheus raspa `/metrics` del API y de **cada réplica de worker**, que
@@ -324,6 +346,15 @@ esperar a la conversión.
 La descarga, en cambio, **sí** pasa por el API: es el único punto donde se
 puede exigir que quien pide sea el dueño del archivo y que el bundle haya
 pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
+
+El navegador solo habla con `frontend`: Nginx sirve la aplicación compilada y
+hace de proxy inverso hacia `api`, que no publica ningún puerto al host. El
+`proxy_pass` apunta a una variable y no al nombre literal, que es lo que
+obliga a Nginx a resolver el DNS en cada petición: con el nombre literal
+cachea la IP al arrancar, y basta recrear el contenedor del API para que quede
+apuntando a una IP que Docker ya reasignó —normalmente a un worker, que
+responde `404` a todo lo que no sea `/metrics`—. El síntoma parece un error de
+rutas del API cuando en realidad el tráfico nunca llegó ahí.
 
 `api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
 del mismo módulo de Go, construidos en la misma imagen y separados a
@@ -554,6 +585,10 @@ make smoke        # ~20 s
 make tolerancia   # ~3 min: detiene MinIO a propósito
 ```
 
+En [`ejemplos/`](ejemplos/) hay documentos listos para subir desde la
+interfaz, uno por cada veredicto que la validación puede emitir —incluido el
+`valid_with_warnings`, que es el que cuesta improvisar en vivo—.
+
 `make smoke` registra dos cuentas, rechaza un `.zip` con 415, sube un `.md`,
 espera a que un worker lo convierta, descarga el `.zip` y verifica por dentro
 que estén `index.md`, `log.md`, los conceptos, el frontmatter con `type` y la
@@ -595,6 +630,7 @@ frontend/        App de Angular (login/registro/dashboard)
 database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
 scripts/         Pruebas contra el stack levantado (smoke, tolerancia)
+ejemplos/        Documentos de entrada listos para probar y demostrar
 ```
 
 ## Desarrollo del backend

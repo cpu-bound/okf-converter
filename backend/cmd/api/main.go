@@ -57,31 +57,26 @@ func run() error {
 		return err
 	}
 
-	rabbitConn, err := convert.Dial(cfg.RabbitMQURL)
-	if err != nil {
-		return err
-	}
-	defer rabbitConn.Close()
-
 	fileRepo := files.NewPgFileRepository(dbPool)
 	outputRepo := files.NewPgOutputRepository(dbPool)
 	jobRepo := files.NewPgJobRepository(dbPool)
 
-	publisher, err := convert.NewPublisher(rabbitConn)
+	publisher, err := convert.NewPublisher(cfg.RabbitMQURL)
 	if err != nil {
 		return err
 	}
+	defer publisher.Close()
 
 	authHandlers := auth.NewHandlers(auth.NewPgUserRepository(dbPool), cfg.JWTSecret, cfg.IsProduction())
 
 	fileHandlers := files.NewHandlers(fileRepo, outputRepo, jobRepo, store)
 	fileHandlers.SupportedFormat = convert.Supports
 	fileHandlers.SupportedFormatMessage = "Formato no soportado. Se admiten documentos en " + convert.SupportedFormatList() + "."
-	fileHandlers.EnqueueConversion = func(ctx context.Context, file files.File, objectKey string, retryOf *string) {
+	fileHandlers.EnqueueConversion = func(ctx context.Context, file files.File, objectKey string, retryOf *string) error {
 		convertJob, err := jobRepo.Create(ctx, file.ID, retryOf)
 		if err != nil {
 			log.Printf("no se pudo registrar el trabajo de conversión del archivo %s: %v", file.ID, err)
-			return
+			return err
 		}
 
 		job := convert.Job{
@@ -94,7 +89,22 @@ func run() error {
 		}
 		if err := publisher.Enqueue(ctx, job); err != nil {
 			log.Printf("no se pudo encolar el trabajo de conversión del archivo %s: %v", file.ID, err)
+
+			// The job row exists but no message does, so nothing will ever
+			// claim it. Mark both as failed rather than leaving a file that
+			// polls forever: 'failed' is the one state the dashboard offers
+			// a retry from, which is exactly the action that fixes this.
+			reason := "no se pudo encolar la conversión: " + err.Error()
+			if markErr := jobRepo.UpdateStatus(ctx, convertJob.ID, "failed", &reason); markErr != nil {
+				log.Printf("no se pudo marcar como fallido el trabajo %s: %v", convertJob.ID, markErr)
+			}
+			if markErr := fileRepo.UpdateStatus(ctx, file.ID, "failed"); markErr != nil {
+				log.Printf("no se pudo marcar como fallido el archivo %s: %v", file.ID, markErr)
+			}
+			return err
 		}
+
+		return nil
 	}
 
 	requireAuth := middleware.RequireAuth(authHandlers.Loader())
