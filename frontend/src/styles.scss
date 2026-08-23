@@ -264,21 +264,6 @@ input::placeholder {
   cursor: default;
 }
 
-.checkbox {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  margin: 4px 0 22px;
-
-  color: var(--graphite);
-  font-size: 13px;
-}
-
-.checkbox input {
-  margin-top: 2px;
-  accent-color: var(--accent);
-}
-
 /* Messages */
 
 .alert {
