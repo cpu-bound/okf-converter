@@ -485,6 +485,7 @@ Requiere Docker y Docker Compose. Todo el stack se levanta con un solo
 comando:
 
 ```bash
+cp .env.example .env
 docker compose up --build
 ```
 
