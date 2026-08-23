@@ -163,6 +163,10 @@ smoke: ## Prueba de punta a punta contra el stack (necesita 'make up')
 tolerancia: ## Idempotencia, reintentos y descartes (DETIENE MinIO un rato)
 	@bash scripts/tolerancia.sh
 
+.PHONY: carga
+carga: ## Carga con perfil de horas punta, 10 min (ESCALA el worker y lo restaura)
+	@bash scripts/carga.sh
+
 # --------------------------------------------------------------------------
 # Agregados
 # --------------------------------------------------------------------------

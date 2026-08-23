@@ -408,10 +408,10 @@ flowchart LR
     API -- "firma URLs de subida;\nlee el .zip para servirlo" --> Minio
     API -- "publica trabajos" --> Rabbit
 
-    Rabbit -- "entrega cada trabajo\na un solo worker" --> Worker
+    Rabbit -- "un trabajo por worker" --> Worker
     Worker -- "SQL: reclamo del trabajo,\nestado, validación" --> DB
     Worker -- "lee el original,\nescribe el bundle" --> Minio
-    Worker -- "reprograma o descarta\nlos intentos fallidos" --> Rabbit
+    Worker -- "maneja intentos fallidos" --> Rabbit
 
     Prom -- "raspa /metrics" --> API
     Prom -- "descubre las réplicas\npor DNS y raspa /metrics" --> Worker
@@ -567,6 +567,7 @@ que borrarla, o `make reset`.
 | `make check` | `go vet` + compilación + todas las pruebas |
 | `make smoke` | Prueba de punta a punta contra el stack levantado |
 | `make tolerancia` | Idempotencia, reintentos y descartes (detiene MinIO un rato) |
+| `make carga` | Carga multiusuario con perfil de horas punta y escalado en caliente |
 
 Los targets de pruebas y compilación corren dentro de contenedores, así que
 no hace falta tener Go ni Node instalados en la máquina.
@@ -576,13 +577,15 @@ no hace falta tener Go ni Node instalados en la máquina.
 Las pruebas unitarias (`make test`) no tocan la infraestructura: corren contra
 dobles. Lo que de verdad hay que demostrar —que el trabajo se convierte una
 sola vez, que un fallo se reintenta y acaba descartado, que un usuario no ve
-los archivos de otro— solo se ve con todo levantado. Para eso hay dos guiones
-en `scripts/`, y ambos pasan por la API igual que lo haría el navegador.
+los archivos de otro— solo se ve con todo levantado. Para eso hay tres
+guiones en `scripts/`, y los tres pasan por la API igual que lo haría el
+navegador.
 
 ```bash
 make up
 make smoke        # ~20 s
 make tolerancia   # ~3 min: detiene MinIO a propósito
+make carga        # ~11 min: ventana de 10 min, escala los workers y los restaura
 ```
 
 En [`ejemplos/`](ejemplos/) hay documentos listos para subir desde la
@@ -604,10 +607,94 @@ agota sus intentos y el mensaje aterriza en `file_conversion.dead`. Al
 restaurar MinIO verifica que el trabajo se recupera —que es lo que hace el
 botón «Reintentar»— y termina escalando los workers.
 
-Sondean en vez de esperar un tiempo fijo, a propósito: Prometheus raspa cada
-15 s y un intento fallido tarda lo que tarde el cliente de S3 en rendirse, que
-es bastante más que el retardo entre reintentos. Con un `sleep` fijo la prueba
-falla sin que falle nada.
+`make carga` mide con números lo que el resto del README afirma en prosa: que
+el API solo publica en la cola, que el trabajo pendiente se acumula en
+RabbitMQ y no dentro de una petición HTTP, y que escalar workers absorbe una
+hora punta sin tocar el API.
+
+**La carga no es una ráfaga.** Llega repartida a lo largo de una ventana de
+diez minutos con forma de horas punta: dos picos separados por un valle, sobre
+un goteo de fondo. Ocho cuentas concurrentes suben documentos siguiendo ese
+calendario **y** sondean `GET /api/files` cada 2,5 s igual que haría su
+navegador —esos sondeos son carga real, y son a la vez el contador de progreso
+del test, así que no hace falta pedirle nada extra al API—. En el valle entre
+los dos picos el guion escala los workers de 2 a 6, que es lo que haría un
+operador que ve venir la segunda punta, y al terminar restaura
+`WORKER_REPLICAS`.
+
+```
+   8.3 |               #                         #
+   5.9 |              ###                       ###
+   3.6 |             ####                       ###
+   1.2 |  #         ######           #         #####        #
+   0.0 +----------------------------------------------------------
+                  pico 1          ^         pico 2
+       doc/s en cubos de 10 s   (^ = momento del escalado)
+```
+
+Todo es parametrizable: `VENTANA=900 PICO=15 ESCALA=8 make carga`, y
+`VENTANA=120 make carga` sirve de humo del propio guion en unos tres minutos.
+
+Cuatro decisiones del guion que valen una línea:
+
+- **Las llegadas se sortean como un proceso de Poisson de tasa variable**, no
+  a intervalos regulares. El tráfico real llega a rachas y con huecos, y es
+  precisamente esa irregularidad la que llena la cola: un goteo perfectamente
+  espaciado a la misma media no la llenaría nunca.
+- **Los dos picos son el mismo sorteo.** Que sigan la misma distribución no
+  basta: con picos estrechos el azar manda, y una corrida puede darle al
+  segundo pico el doble de carga que al primero y apuntárselo al escalado. El
+  exceso sobre el valle se sortea una vez y se copia en los dos centros, así
+  que lo único que separa un pico del otro son los workers que había detrás.
+- **Los documentos son sintéticos, no los de `ejemplos/`.** Los de ejemplos
+  pesan menos de 3 KB: miden el overhead del pipeline, no su techo. El guion
+  genera tres perfiles —4 KB, 44 KB y 193 KB, con 4, 20 y 60 encabezados— y
+  los cicla. Los largos son los que hacen que un pico cueste trabajo de verdad
+  cuando solo hay cuatro conversiones en paralelo.
+- **El backlog se lee de la API de gestión de RabbitMQ, no de Prometheus.** La
+  forma de la cola durante un pico es justo lo que se quiere ver, y Prometheus
+  raspa cada 15 s: se perdería el pico entero.
+- **Y la cuenta de «no se perdió ningún trabajo» se le hace a Postgres, no a
+  Prometheus.** Es la misma razón por la que el dashboard no deriva el trabajo
+  pendiente restando contadores (ver [Observabilidad](#observabilidad)),
+  llevada un paso más allá: los contadores de conversión viven dentro de cada
+  réplica de worker, así que cuando el guion devuelve los workers a su escala
+  **desaparecen con las réplicas que destruye**. Correr `make carga` y mirar
+  `sum(convert_jobs_processed_total)` antes y después lo enseña de golpe: 260
+  y luego 169, sin que se haya perdido una sola conversión. Por eso el guion
+  lee las métricas mientras las réplicas siguen vivas, y aun así la cuenta que
+  decide si el test pasa la saca de la base de datos.
+
+El reporte dibuja las llegadas y la cola a lo largo de la ventana, enfrenta
+los dos picos —cuánta cola acumuló cada uno y cuánto tardó en vaciarse— y
+cierra con dos mitades: lo que vio el cliente (percentiles de `upload-url`,
+del `PUT` a MinIO, de `confirm` y del sondeo) y lo que dice el servidor
+(encolados, procesados, reintentos, descartes, veredictos y duración p50/p95).
+La diferencia entre ambas **es** el respaldo de la cola.
+
+Hay además una medida del propio generador: el **desfase**, lo que se retrasó
+cada subida respecto a la hora que tenía asignada. Si crece, el cuello de
+botella está en el guion y no en el sistema, y el perfil que se midió fue más
+plano que el que se planeó. Es lo que separa una prueba de carga de una
+anécdota.
+
+Falla si algún `confirm` no devuelve `200`, si algún archivo acaba en
+`failed`, si algo llega a `.dead`, si la cola no se drena, o si algún documento
+encolado no figura convertido en Postgres. Dos cosas solo avisan: que las
+métricas de Prometheus no cuadren —retraso de raspado, o contadores de
+réplicas ya destruidas— y que escalar no reduzca la cola del pico, porque en
+una máquina con pocos núcleos las réplicas compiten por la misma CPU y un test
+que falla por el hardware del que lo corre no sirve.
+
+Deja sus archivos y bundles sin borrar, a propósito: mirar el dashboard
+*Conversión de documentos* de Grafana después —«Conversiones en curso»
+subiendo al escalar, «Trabajos en cola» con sus dos jorobas— es medio motivo
+de correrlo. `make reset` lo limpia.
+
+Los tres sondean en vez de esperar un tiempo fijo, a propósito: Prometheus
+raspa cada 15 s y un intento fallido tarda lo que tarde el cliente de S3 en
+rendirse, que es bastante más que el retardo entre reintentos. Con un `sleep`
+fijo la prueba falla sin que falle nada.
 
 ## Estructura del proyecto
 
@@ -629,7 +716,7 @@ backend/         Backend en Go (un módulo, dos binarios)
 frontend/        App de Angular (login/registro/dashboard)
 database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
-scripts/         Pruebas contra el stack levantado (smoke, tolerancia)
+scripts/         Pruebas contra el stack levantado (smoke, tolerancia, carga)
 ejemplos/        Documentos de entrada listos para probar y demostrar
 ```
 
