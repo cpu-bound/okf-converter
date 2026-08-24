@@ -26,13 +26,20 @@ S            ?= api
 # Despliegue
 # --------------------------------------------------------------------------
 
+# El .env real no se versiona, así que un clon limpio no lo tiene. Crearlo
+# aquí es lo que mantiene cierta la promesa de "un comando": sin esto, el
+# primer `make up` de cualquiera arrancaría con variables vacías.
+.PHONY: env
+env: ## Crea .env a partir de .env.example si aún no existe
+	@[ -f .env ] || { cp .env.example .env; echo "Creado .env a partir de .env.example"; }
+
 .PHONY: up
-up: ## Levanta todo el stack en segundo plano (construyendo lo necesario)
+up: env ## Levanta todo el stack en segundo plano (construyendo lo necesario)
 	$(COMPOSE) up --build -d
 	@$(MAKE) --no-print-directory urls
 
 .PHONY: up-fg
-up-fg: ## Levanta el stack en primer plano, con logs (demo de despliegue)
+up-fg: env ## Levanta el stack en primer plano, con logs (demo de despliegue)
 	$(COMPOSE) up --build
 
 .PHONY: down

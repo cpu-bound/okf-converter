@@ -45,13 +45,16 @@ Thumbs.db
 
 # Configuración
 #
-# `.env` SÍ se versiona: contiene únicamente valores de desarrollo local y es
-# lo que permite desplegar con un solo comando desde un clon limpio. Las
-# sobrescrituras locales o de despliegue real van en `.env.local`, que Docker
-# Compose no carga por defecto (usar `--env-file .env.local`).
+# El `.env` real NO se versiona: es el archivo que cada quien edita, y es
+# donde acabarían las credenciales de un despliegue de verdad. Lo que sí se
+# versiona es `.env.example`, con valores de desarrollo local, para que un
+# clon limpio arranque copiándolo.
+.env
 .env.local
 .env.*.local
+!.env.example
 
 # Notas de trabajo, no parte de la entrega
 preguntas-profesor.md
+correo-profesor.md
 pendientes.md

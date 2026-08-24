@@ -481,15 +481,20 @@ flowchart TD
 
 ## Ejecutar la aplicación
 
-Requiere Docker y Docker Compose. Todo el stack se levanta con un solo
-comando:
+Requiere Docker y Docker Compose. Nada más: ni Go ni Node ni Angular hacen
+falta en la máquina, porque todo se compila dentro de los contenedores.
+
+```bash
+make up
+```
+
+Eso es todo. `make up` copia `.env.example` a `.env` si aún no existe y
+levanta el stack. Sin `make`, son dos comandos:
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
-
-o, equivalentemente, `make up` (ver [Comandos make](#comandos-make)).
 
 Una vez en ejecución:
 
@@ -502,8 +507,37 @@ Una vez en ejecución:
 La API no publica ningún puerto en el host: se accede a través del proxy
 inverso del frontend, en http://localhost:8080/api/.
 
-No hace falta ningún paso previo: el [`.env`](.env) está versionado y el
-esquema de Postgres se aplica solo en el primer arranque. Por eso mismo, si ya
+### Qué subir
+
+En [`ejemplos/`](ejemplos/) hay tres documentos listos para arrastrar a la
+aplicación, uno por cada veredicto que la validación puede emitir:
+
+| Archivo | Formato | Veredicto |
+| --- | --- | --- |
+| [`guia-despliegue.md`](ejemplos/guia-despliegue.md) | Markdown | `valid` |
+| [`manual-api.html`](ejemplos/manual-api.html) | HTML | `valid` |
+| [`plan-migracion.md`](ejemplos/plan-migracion.md) | Markdown | `valid_with_warnings` |
+
+Los tres producen seis unidades de conocimiento, así que sirven para comparar
+la salida entre formatos. Para ver el rechazo por formato, cualquier `.zip`
+vale: la API lo refuta con `415` antes de emitir la URL de subida.
+[`ejemplos/README.md`](ejemplos/README.md) explica cada caso.
+
+### Comprobar que funciona
+
+Con el stack arriba, tres guiones lo ejercitan de punta a punta sin tocar la
+interfaz —el detalle de cada uno está en
+[Probar el stack levantado](#probar-el-stack-levantado)—:
+
+```bash
+make smoke        # ~20 s   flujo completo y aislamiento entre usuarios
+make tolerancia   # ~3 min  idempotencia, reintentos y descartes
+make carga        # ~11 min carga multiusuario con perfil de horas punta
+```
+
+### Volver a empezar
+
+El esquema de Postgres se aplica solo en el primer arranque. Por eso, si ya
 habías levantado el stack con una versión anterior del esquema, hay que
 descartar los volúmenes —`init.sql` solo corre sobre una base vacía—:
 
@@ -514,20 +548,24 @@ make fresh          # equivale a make reset && make up
 ## Configuración
 
 Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
-[`.env`](.env) de la raíz, fuera del código y fuera de `docker-compose.yml`,
-que solo describe el cableado entre servicios e interpola esas variables.
-`make urls` imprime las direcciones y credenciales realmente en uso, y
-`make config` muestra el compose ya resuelto.
+`.env` de la raíz, fuera del código y fuera de `docker-compose.yml`, que solo
+describe el cableado entre servicios e interpola esas variables. `make urls`
+imprime las direcciones y credenciales realmente en uso, y `make config`
+muestra el compose ya resuelto.
 
-`.env` está versionado a propósito: contiene únicamente valores de
-desarrollo local, y es lo que permite que `docker compose up` funcione desde
-un clon limpio sin pasos previos. Para un despliegue real:
+Ese `.env` **no está versionado**. El repositorio trae
+[`.env.example`](.env.example) con valores de desarrollo local, y `.env` sale
+de copiarlo:
 
 ```bash
-cp .env .env.local          # .env.local está en .gitignore
-# editar JWT_SECRET y todas las contraseñas, y APP_ENV=production
-docker compose --env-file .env.local up --build
+cp .env.example .env
 ```
+
+Ningún valor de configuración está escrito en el código ni en el compose, así
+que cambiar de entorno es cambiar ese archivo y nada más. Para un despliegue
+real hay que editar `JWT_SECRET`, todas las contraseñas y poner
+`APP_ENV=production`; como `.env` está en `.gitignore`, esas credenciales no
+pueden acabar en el repositorio por descuido.
 
 `APP_ENV=production` activa el flag `Secure` de la cookie de sesión, que
 exige servir la aplicación por HTTPS.
