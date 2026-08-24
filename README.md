@@ -2,7 +2,7 @@
 
 OKF Converter es una aplicación web multiusuario que convierte documentos en
 bundles de conocimiento en formato OKF. Un usuario se autentica y sube un
-archivo; la API responde de inmediato con un identificador de trabajo y la
+archivo. La API responde de inmediato con un identificador de trabajo y la
 conversión ocurre en segundo plano, en workers independientes. El resultado
 es un bundle: una carpeta autocontenida con un índice, una bitácora de la
 conversión y un documento Markdown por cada unidad lógica del documento
@@ -24,15 +24,14 @@ original.
 
 ## Cómo usar
 
-Requiere Docker y Docker Compose. Nada más: ni Go ni Node ni Angular hacen
-falta en la máquina, porque todo se compila dentro de los contenedores.
+Requiere Docker y Docker Compose.
 
 ```bash
 make up
 ```
 
-Eso es todo. `make up` copia `.env.example` a `.env` si aún no existe y
-levanta el stack. Sin `make`, son dos comandos:
+`make up` copia `.env.example` a `.env` si aún no existe y levanta el stack.
+Sin `make`, son dos comandos:
 
 ```bash
 cp .env.example .env
@@ -62,15 +61,15 @@ aplicación, uno por cada veredicto que la validación puede emitir:
 | [`plan-migracion.md`](ejemplos/plan-migracion.md) | Markdown | `valid_with_warnings` |
 
 Los tres producen seis unidades de conocimiento, así que sirven para comparar
-la salida entre formatos. Para ver el rechazo por formato, cualquier `.zip`
-vale: la API lo refuta con `415` antes de emitir la URL de subida.
+la salida entre formatos. Para ver el rechazo por formato vale cualquier
+`.zip`. La API lo refuta con `415` antes de emitir la URL de subida.
 [`ejemplos/README.md`](ejemplos/README.md) explica cada caso.
 
 ### Comprobar que funciona
 
 Con el stack arriba, tres guiones lo ejercitan de punta a punta sin tocar la
-interfaz —el detalle de cada uno está en
-[Probar el stack levantado](#probar-el-stack-levantado)—:
+interfaz. El detalle de cada uno está en
+[Probar el stack levantado](#probar-el-stack-levantado).
 
 ```bash
 make smoke        # ~20 s   flujo completo y aislamiento entre usuarios
@@ -80,9 +79,9 @@ make carga        # ~11 min carga multiusuario con perfil de horas punta
 
 ### Volver a empezar
 
-El esquema de Postgres se aplica solo en el primer arranque. Por eso, si ya
-habías levantado el stack con una versión anterior del esquema, hay que
-descartar los volúmenes —`init.sql` solo corre sobre una base vacía—:
+El esquema de Postgres se aplica solo en el primer arranque, y `init.sql`
+solo corre sobre una base vacía. Si ya habías levantado el stack con una
+versión anterior del esquema, hay que descartar los volúmenes:
 
 ```bash
 make fresh          # equivale a make reset && make up
@@ -114,7 +113,7 @@ no hace falta tener Go ni Node instalados en la máquina.
 
 ## Configuración
 
-Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
+Toda la configuración (credenciales, puertos y endpoints) vive en el archivo
 `.env` de la raíz, fuera del código y fuera de `docker-compose.yml`, que solo
 describe el cableado entre servicios e interpola esas variables. `make urls`
 imprime las direcciones y credenciales realmente en uso, y `make config`
@@ -131,15 +130,15 @@ cp .env.example .env
 Ningún valor de configuración está escrito en el código ni en el compose, así
 que cambiar de entorno es cambiar ese archivo y nada más. Para un despliegue
 real hay que editar `JWT_SECRET`, todas las contraseñas y poner
-`APP_ENV=production`; como `.env` está en `.gitignore`, esas credenciales no
+`APP_ENV=production`. Como `.env` está en `.gitignore`, esas credenciales no
 pueden acabar en el repositorio por descuido.
 
 `APP_ENV=production` activa el flag `Secure` de la cookie de sesión, que
 exige servir la aplicación por HTTPS.
 
-El backend en Go lee estas variables desde el entorno del proceso; ninguna
-tiene valor de configuración escrito en el código. La lista completa, con sus
-valores por defecto, está en `backend/internal/config/config.go`.
+El backend en Go lee estas variables desde el entorno del proceso. La lista
+completa, con sus valores por defecto, está en
+`backend/internal/config/config.go`.
 
 Las que gobiernan los workers:
 
@@ -151,7 +150,7 @@ Las que gobiernan los workers:
 | `WORKER_RETRY_DELAY_SECONDS` | `10` | Espera entre intentos |
 
 `WORKER_RETRY_DELAY_SECONDS` es un atributo de la cola `file_conversion.retry`,
-así que cambiarlo solo surte efecto sobre una cola que todavía no exista: hay
+así que cambiarlo solo surte efecto sobre una cola que todavía no exista. Hay
 que borrarla, o `make reset`.
 
 ## Arquitectura
@@ -168,29 +167,29 @@ que borrarla, o `make reset`.
 | `grafana`    | Grafana                             | Dashboards sobre las métricas de Prometheus     |
 
 Flujo de subida: el frontend pide al API una URL prefirmada, sube el archivo
-directamente a MinIO —los bytes nunca pasan por el API— y luego confirma la
-subida. El API encola un trabajo en RabbitMQ y responde de inmediato, sin
+directamente a MinIO y luego confirma la subida. Los bytes nunca pasan por el
+API. El API encola un trabajo en RabbitMQ y responde de inmediato, sin
 esperar a la conversión.
 
-La descarga, en cambio, **sí** pasa por el API: es el único punto donde se
+La descarga, en cambio, **sí** pasa por el API. Es el único punto donde se
 puede exigir que quien pide sea el dueño del archivo y que el bundle haya
 pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
 
-El navegador solo habla con `frontend`: Nginx sirve la aplicación compilada y
+El navegador solo habla con `frontend`. Nginx sirve la aplicación compilada y
 hace de proxy inverso hacia `api`, que no publica ningún puerto al host. El
 `proxy_pass` apunta a una variable y no al nombre literal, que es lo que
-obliga a Nginx a resolver el DNS en cada petición: con el nombre literal
+obliga a Nginx a resolver el DNS en cada petición. Con el nombre literal
 cachea la IP al arrancar, y basta recrear el contenedor del API para que quede
-apuntando a una IP que Docker ya reasignó —normalmente a un worker, que
-responde `404` a todo lo que no sea `/metrics`—. El síntoma parece un error de
-rutas del API cuando en realidad el tráfico nunca llegó ahí.
+apuntando a una IP que Docker ya reasignó, normalmente a un worker, que
+responde `404` a todo lo que no sea `/metrics`. El síntoma parece un error de
+rutas del API cuando el tráfico nunca llegó ahí.
 
 `api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
 del mismo módulo de Go, construidos en la misma imagen y separados a
-propósito: el API solo publica en la cola y el worker solo consume. Comparten
+propósito. El API solo publica en la cola y el worker solo consume. Comparten
 la base de datos, el almacenamiento y la cola, pero nunca se comunican entre
 sí. Por eso la conversión no puede ocupar una petición HTTP, y los workers se
-escalan sin tocar el API:
+escalan sin tocar el API.
 
 ```bash
 make scale N=4          # docker compose up -d --scale worker=4
@@ -205,7 +204,7 @@ carga se reparta en vez de que un consumidor acapare la cola.
 
 ### Arquitectura de contenedores
 
-Cada bloque es un contenedor de `docker-compose.yml`; las flechas indican
+Cada bloque es un contenedor de `docker-compose.yml`. Las flechas indican
 qué contenedores se comunican entre sí y con qué propósito.
 
 ```mermaid
@@ -234,7 +233,7 @@ flowchart LR
     Browser -- "sube con URL prefirmada\n(los bytes no pasan por el API)" --> Minio
 
     API -- "SQL: usuarios, archivos,\ntrabajos, validaciones" --> DB
-    API -- "firma URLs de subida;\nlee el .zip para servirlo" --> Minio
+    API -- "firma URLs de subida,\nlee el .zip para servirlo" --> Minio
     API -- "publica trabajos" --> Rabbit
 
     Rabbit -- "un trabajo por worker" --> Worker
@@ -266,7 +265,7 @@ flowchart TD
     G --> H(["API responde de inmediato,\nsin URL de descarga: todavía no hay bundle"])
     G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
     I --> I1{"¿Logra reclamar el trabajo?\n(transición atómica en Postgres)"}
-    I1 -- No --> I2(["Entrega duplicada o trabajo ya hecho:\nack y nada más — un solo efecto final"])
+    I1 -- No --> I2(["Entrega duplicada o trabajo ya hecho:\nack y nada más, un solo efecto final"])
     I1 -- Sí --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
     J --> K{"¿Qué formato tiene?"}
     K -- ".md" --> L1["Encabezados '#' y subrayados"]
@@ -276,7 +275,7 @@ flowchart TD
     L1 --> M{"¿Se detectó\nestructura?"}
     L2 --> M
     L3 --> M
-    M -- Sí --> M1["Una unidad por sección del nivel más alto\nque de verdad divide el documento;\nlas subsecciones quedan dentro de la suya"]
+    M -- Sí --> M1["Una unidad por sección del nivel más alto\nque de verdad divide el documento.\nLas subsecciones quedan dentro de la suya"]
     M -- No --> N{"¿Documento\nbreve?"}
     N -- Sí --> N1["Todo el documento\nes un único concepto"]
     N -- No --> N2["Se divide por párrafos, cortando bloques\nde más de 20.000 bytes sin romper UTF-8"]
@@ -295,7 +294,7 @@ flowchart TD
     Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
     Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
     S --> S1{"¿Quedan intentos?"}
-    S1 -- Sí --> S2["Trabajo vuelve a 'queued' y archivo a 'ready';\nel mensaje espera en file_conversion.retry"]
+    S1 -- Sí --> S2["Trabajo vuelve a 'queued' y archivo a 'ready'.\nEl mensaje espera en file_conversion.retry"]
     S2 -. vence el TTL .-> I
     S1 -- No --> S3(["El mensaje va a file_conversion.dead.\nEl archivo queda 'failed' con el motivo"])
     R --> U["El frontend sondea GET /api/files hasta que\nno queda nada en 'ready' ni 'converting',\ny habilita la descarga"]
@@ -304,7 +303,7 @@ flowchart TD
     U1{"¿Es el dueño\ny está publicado?"}
     U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
     U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
-    S3 --> T["El usuario puede pedir un reintento manual\nPOST /api/files/:id/retry — crea un trabajo nuevo"]
+    S3 --> T["El usuario puede pedir un reintento manual\nPOST /api/files/:id/retry, que crea un trabajo nuevo"]
     T -.-> I
 ```
 
@@ -365,11 +364,11 @@ segmentación parte de la estructura del propio documento:
 
 | Formato | Cómo se detecta la estructura |
 | --- | --- |
-| Markdown (`.md`) | Encabezados ATX (`#`) y subrayados setext; lo que está dentro de un bloque de código no cuenta |
-| HTML (`.html`, `.htm`) | Se renderiza a Markdown (`<h1>`–`<h6>` → encabezados) y se segmenta igual; `<script>`, `<style>` y `<head>` se descartan |
+| Markdown (`.md`) | Encabezados ATX (`#`) y subrayados setext. Lo que está dentro de un bloque de código no cuenta |
+| HTML (`.html`, `.htm`) | Se renderiza a Markdown (`<h1>` a `<h6>` pasan a encabezados) y se segmenta igual. `<script>`, `<style>` y `<head>` se descartan |
 | Texto plano (`.txt`) | Encabezados Markdown, secciones numeradas (`3.1 Metodología`, `1. Introducción`) y palabras clave (`Capítulo IV`, `Sección 2`) |
 | PDF (`.pdf`) | Se extrae el texto reconstruyendo los espacios por posición de carácter y se trata como texto plano |
-| CSV (`.csv`) | Cada fila es una unidad; ninguna detección de encabezados encontraría sus divisiones reales |
+| CSV (`.csv`) | Cada fila es una unidad. Ninguna detección de encabezados encontraría sus divisiones reales |
 
 Dos decisiones que vale la pena conocer:
 
@@ -394,8 +393,8 @@ llega al almacenamiento de objetos y nunca se ofrece para descarga.
 
 Se miden dos cosas por separado:
 
-- **Validez de plataforma** — ¿es un bundle usable?
-- **Conformidad OKF** — ¿cumple la especificación Open Knowledge Format v0.1?
+- **Validez de plataforma.** ¿Es un bundle usable?
+- **Conformidad OKF.** ¿Cumple la especificación Open Knowledge Format v0.1?
 
 | Regla | Ámbito | Severidad |
 | --- | --- | --- |
@@ -411,7 +410,7 @@ Se miden dos cosas por separado:
 El resultado se clasifica en **válido**, **válido con advertencias** o
 **inválido**, y se guarda en la tabla `files` (`validation` y el informe regla
 por regla en `validation_report`). Un bundle inválido deja el archivo en
-`failed` con el motivo; uno con advertencias se publica igual y las reporta.
+`failed` con el motivo. Uno con advertencias se publica igual y las reporta.
 
 Que una regla sea *advertencia* y no *error* tiene una razón concreta: el
 cuerpo de un concepto arrastra el Markdown del documento original, así que un
@@ -420,7 +419,7 @@ defecto real que hay que reportar, pero no uno por el que valga la pena negarse
 a entregar el bundle.
 
 El veredicto completo queda también dentro del propio bundle, en la sección
-`## Validación` de `log.md`, con todas las reglas —las superadas incluidas—,
+`## Validación` de `log.md`, con todas las reglas, las superadas incluidas,
 que es lo que pide el §3 del enunciado sobre trazabilidad.
 
 ## Descarga del bundle
@@ -429,9 +428,9 @@ que es lo que pide el §3 del enunciado sobre trazabilidad.
 no por una URL prefirmada, porque es el único punto donde se pueden exigir las
 dos condiciones del §6:
 
-- **que quien pide sea el dueño del archivo** — una URL prefirmada, una vez
-  entregada, le responde a quien la tenga;
-- **que el bundle esté publicado** — es decir, que haya pasado la validación.
+- **que quien pide sea el dueño del archivo.** Una URL prefirmada, una vez
+  entregada, le responde a quien la tenga.
+- **que el bundle esté publicado**, es decir, que haya pasado la validación.
 
 La API no carga el archivo en memoria: lo transmite por flujo desde MinIO, así
 que un bundle grande le cuesta un buffer y no su tamaño completo.
@@ -458,14 +457,14 @@ por vuelta para todos los archivos que se estén siguiendo. Dos detalles
 deliberados:
 
 - **Solo se sondea si hay algo que esperar.** Un archivo en `ready` o
-  `converting` está esperando a un worker; uno en `pending` es una subida que
+  `converting` está esperando a un worker. Uno en `pending` es una subida que
   nunca se confirmó y que ningún worker va a tomar, así que no cuenta.
 - **El sondeo se rinde a los 10 minutos**, para que un worker caído no deje
   una pestaña preguntando indefinidamente. Queda el botón «Actualizar».
 
 El botón de descarga solo se habilita con el bundle publicado. El veredicto de
 la validación se muestra junto al estado, y al abrirlo se pide el informe
-regla por regla a `GET /api/files/{id}` —que no viaja en el listado
+regla por regla a `GET /api/files/{id}`. Ese informe no viaja en el listado
 justamente porque el listado se sondea cada pocos segundos.
 
 El selector de archivo lleva un `accept` con los formatos soportados, así que
@@ -507,7 +506,7 @@ autenticado: el `user_id` va en la consulta SQL, no en un filtro posterior.
 ### Una entrega duplicada no convierte dos veces
 
 Antes de convertir nada, el worker **reclama el trabajo** con una transición
-atómica en Postgres. Gana un solo reclamante; cualquier otra entrega del mismo
+atómica en Postgres. Gana un solo reclamante, y cualquier otra entrega del mismo
 trabajo recibe «no reclamado», hace `ack` y no toca el convertidor. Es lo que
 exige el §6: un único efecto final y, a lo sumo, un bundle publicado.
 
@@ -516,7 +515,7 @@ Qué estados se pueden reclamar:
 | Estado del trabajo | ¿Reclamable? | Por qué |
 | --- | --- | --- |
 | `queued` | Sí | Trabajo nuevo, o devuelto a la espera para otro intento |
-| `failed` | Sí | El intento anterior terminó y perdió; reintentar es el objetivo |
+| `failed` | Sí | El intento anterior terminó y perdió. Reintentar es el objetivo |
 | `converting` | Solo si el mensaje viene marcado como reentrega | RabbitMQ solo reentrega cuando el canal del consumidor anterior ya no existe, así que un trabajo atascado en `converting` con un mensaje reentregado es uno cuyo worker se murió a mitad. Negarlo dejaría el archivo varado para siempre |
 | `converted` | Nunca | El bundle ya está publicado, y publicar un segundo es justo lo que el §6 prohíbe |
 
@@ -533,7 +532,7 @@ El pipeline corre sobre tres colas duraderas:
 
 ```
 file_conversion         trabajos por convertir
-file_conversion.retry   espera entre intentos; vence hacia la principal
+file_conversion.retry   espera entre intentos, vence hacia la principal
 file_conversion.dead    intentos agotados, para inspección
 ```
 
@@ -548,20 +547,19 @@ detrás. El costo es que la espera es fija y no exponencial.
 
 Al agotar `WORKER_MAX_ATTEMPTS` intentos, el mensaje va a la cola de
 descartes. El archivo y el trabajo quedan en `failed` con el motivo, que es lo
-que ve el usuario y sobre lo que actúa el **reintento manual** del §5.2 —que
-sigue existiendo y crea un trabajo nuevo, con su propio presupuesto de
-intentos, enlazado al anterior por `retry_of`.
+que ve el usuario y sobre lo que actúa el **reintento manual** del §5.2. Ese
+reintento sigue existiendo y crea un trabajo nuevo, con su propio presupuesto
+de intentos, enlazado al anterior por `retry_of`.
 
 Entre intento e intento el trabajo vuelve a `queued` y el archivo a `ready`.
 Sin eso, el archivo se quedaría en `failed` entre intentos y tanto la API como
 el dashboard reportarían un fallo definitivo de un trabajo que sigue en
-proceso —el dashboard incluso dejaría de sondear, porque `failed` es terminal
-para él—.
+proceso. El dashboard incluso dejaría de sondear, porque `failed` es terminal
+para él.
 
-Las tres situaciones tienen su métrica, precisamente porque significan cosas
-distintas: `convert_jobs_skipped_total` (entregas duplicadas descartadas: es
-la idempotencia funcionando, no un problema), `convert_jobs_retried_total` y
-`convert_jobs_dead_lettered_total{reason}`.
+Cada situación tiene su métrica: `convert_jobs_skipped_total`,
+`convert_jobs_retried_total` y `convert_jobs_dead_lettered_total{reason}`.
+Qué significa cada una está en [Observabilidad](#observabilidad).
 
 `make queue` muestra el estado de las tres colas.
 
@@ -574,9 +572,9 @@ consumir nada. Es un fallo especialmente traicionero del lado del API, porque
 un publicador ocioso no da ninguna señal hasta que alguien sube un archivo.
 
 Por eso ni el API ni los workers guardan un canal fijo. Ambos piden un canal
-sano en cada uso y lo reabren cuando el anterior murió, redeclarando las colas
-—un reconecte no puede dar por hecho que el broker conservó la topología—. El
-API reintenta la publicación una vez, porque el primer intento puede caer
+sano en cada uso y lo reabren cuando el anterior murió, redeclarando las
+colas. Un reconecte no puede dar por hecho que el broker conservó la
+topología. El API reintenta la publicación una vez, porque el primer intento puede caer
 justo en el canal que acaba de morir. Los workers, además, vuelven a
 suscribirse con espera creciente hasta 30 s: un worker que deja de consumir en
 silencio es peor que uno que se cae, porque nadie se entera.
@@ -599,7 +597,7 @@ dashboard *Conversión de documentos*
 | --- | --- | --- |
 | `convert_jobs_enqueued_total` | API | Trabajos publicados en la cola |
 | `convert_jobs_processed_total{status}` | Workers | Intentos de conversión por resultado |
-| `convert_jobs_in_flight` | Workers | Cuánto del pool está ocupado; hace visible el escalado |
+| `convert_jobs_in_flight` | Workers | Cuánto del pool está ocupado, y hace visible el escalado |
 | `convert_job_duration_seconds` | Workers | Duración de la conversión (p50/p95/p99) |
 | `convert_bundles_validated_total{verdict}` | Workers | Bundles válidos / con advertencias / inválidos |
 | `convert_jobs_skipped_total` | Workers | Entregas duplicadas descartadas |
@@ -607,11 +605,11 @@ dashboard *Conversión de documentos*
 | `convert_jobs_dead_lettered_total{reason}` | Workers | Mensajes descartados definitivamente |
 | `rabbitmq_detailed_queue_messages{queue}` | RabbitMQ | Profundidad real de cada cola |
 
-Están separadas a propósito porque significan cosas distintas. Un documento
-que **no pasa la validación** y un trabajo que **se cae** son fallas de
-naturaleza muy diferente, y en un único contador de fallos no se
-distinguirían. Y `convert_jobs_skipped_total` contando hacia arriba no es un
-problema: cada unidad es una conversión repetida que **no** ocurrió.
+Están separadas porque significan cosas distintas. Un documento que **no pasa
+la validación** y un trabajo que **se cae** son fallas de naturaleza muy
+diferente, y en un único contador de fallos no se distinguirían.
+`convert_jobs_skipped_total` contando hacia arriba no es un problema: cada
+unidad es una conversión repetida que **no** ocurrió.
 
 Que la API y los workers expongan las suyas por separado es lo que permite
 ver la diferencia entre lo encolado y lo procesado como un respaldo real de
@@ -627,10 +625,10 @@ dashboard lee de ahí.
 
 ## Probar el stack levantado
 
-Las pruebas unitarias (`make test`) no tocan la infraestructura: corren contra
-dobles. Lo que de verdad hay que demostrar —que el trabajo se convierte una
-sola vez, que un fallo se reintenta y acaba descartado, que un usuario no ve
-los archivos de otro— solo se ve con todo levantado. Para eso hay tres
+Las pruebas unitarias (`make test`) no tocan la infraestructura, corren contra
+dobles. Lo que hay que demostrar solo se ve con todo levantado: que
+el trabajo se convierte una sola vez, que un fallo se reintenta y acaba
+descartado, y que un usuario no ve los archivos de otro. Para eso hay tres
 guiones en `scripts/`, y los tres pasan por la API igual que lo haría el
 navegador.
 
@@ -642,8 +640,8 @@ make carga        # ~11 min: ventana de 10 min, escala los workers y los restaur
 ```
 
 En [`ejemplos/`](ejemplos/) hay documentos listos para subir desde la
-interfaz, uno por cada veredicto que la validación puede emitir —incluido el
-`valid_with_warnings`, que es el que cuesta improvisar en vivo—.
+interfaz, uno por cada veredicto que la validación puede emitir. Incluye el
+`valid_with_warnings`, que es el que cuesta improvisar en vivo.
 
 `make smoke` registra dos cuentas, rechaza un `.zip` con 415, sube un `.md`,
 espera a que un worker lo convierta, descarga el `.zip` y verifica por dentro
@@ -657,8 +655,8 @@ mensaje ya procesado por la API de gestión de RabbitMQ y comprueba las dos
 cosas a la vez: que suba `convert_jobs_skipped_total` **y** que no aparezca un
 segundo bundle. Luego detiene MinIO, reencola, y sondea hasta que el trabajo
 agota sus intentos y el mensaje aterriza en `file_conversion.dead`. Al
-restaurar MinIO verifica que el trabajo se recupera —que es lo que hace el
-botón «Reintentar»— y termina escalando los workers.
+restaurar MinIO verifica que el trabajo se recupera, que es lo que hace el
+botón «Reintentar», y termina escalando los workers.
 
 `make carga` mide con números lo que el resto del README afirma en prosa: que
 el API solo publica en la cola, que el trabajo pendiente se acumula en
@@ -669,8 +667,8 @@ hora punta sin tocar el API.
 diez minutos con forma de horas punta: dos picos separados por un valle, sobre
 un goteo de fondo. Ocho cuentas concurrentes suben documentos siguiendo ese
 calendario **y** sondean `GET /api/files` cada 2,5 s igual que haría su
-navegador —esos sondeos son carga real, y son a la vez el contador de progreso
-del test, así que no hace falta pedirle nada extra al API—. En el valle entre
+navegador. Esos sondeos son carga real, y son a la vez el contador de progreso
+del test, así que no hace falta pedirle nada extra al API. En el valle entre
 los dos picos el guion escala los workers de 2 a 6, que es lo que haría un
 operador que ve venir la segunda punta, y al terminar restaura
 `WORKER_REPLICAS`.
@@ -692,17 +690,17 @@ Cuatro decisiones del guion que valen una línea:
 
 - **Las llegadas se sortean como un proceso de Poisson de tasa variable**, no
   a intervalos regulares. El tráfico real llega a rachas y con huecos, y es
-  precisamente esa irregularidad la que llena la cola: un goteo perfectamente
-  espaciado a la misma media no la llenaría nunca.
+  esa irregularidad la que llena la cola. Un goteo perfectamente espaciado a
+  la misma media no la llenaría nunca.
 - **Los dos picos son el mismo sorteo.** Que sigan la misma distribución no
   basta: con picos estrechos el azar manda, y una corrida puede darle al
   segundo pico el doble de carga que al primero y apuntárselo al escalado. El
   exceso sobre el valle se sortea una vez y se copia en los dos centros, así
   que lo único que separa un pico del otro son los workers que había detrás.
 - **Los documentos son sintéticos, no los de `ejemplos/`.** Los de ejemplos
-  pesan menos de 3 KB: miden el overhead del pipeline, no su techo. El guion
-  genera tres perfiles —4 KB, 44 KB y 193 KB, con 4, 20 y 60 encabezados— y
-  los cicla. Los largos son los que hacen que un pico cueste trabajo de verdad
+  pesan menos de 3 KB, así que miden el overhead del pipeline y no su techo.
+  El guion genera tres perfiles (4 KB, 44 KB y 193 KB, con 4, 20 y 60
+  encabezados) y los cicla. Los largos son los que hacen que un pico cueste
   cuando solo hay cuatro conversiones en paralelo.
 - **El backlog se lee de la API de gestión de RabbitMQ, no de Prometheus.** La
   forma de la cola durante un pico es justo lo que se quiere ver, y Prometheus
@@ -719,7 +717,7 @@ Cuatro decisiones del guion que valen una línea:
   decide si el test pasa la saca de la base de datos.
 
 El reporte dibuja las llegadas y la cola a lo largo de la ventana, enfrenta
-los dos picos —cuánta cola acumuló cada uno y cuánto tardó en vaciarse— y
+los dos picos (cuánta cola acumuló cada uno y cuánto tardó en vaciarse) y
 cierra con dos mitades: lo que vio el cliente (percentiles de `upload-url`,
 del `PUT` a MinIO, de `confirm` y del sondeo) y lo que dice el servidor
 (encolados, procesados, reintentos, descartes, veredictos y duración p50/p95).
@@ -733,15 +731,15 @@ anécdota.
 
 Falla si algún `confirm` no devuelve `200`, si algún archivo acaba en
 `failed`, si algo llega a `.dead`, si la cola no se drena, o si algún documento
-encolado no figura convertido en Postgres. Dos cosas solo avisan: que las
-métricas de Prometheus no cuadren —retraso de raspado, o contadores de
-réplicas ya destruidas— y que escalar no reduzca la cola del pico, porque en
-una máquina con pocos núcleos las réplicas compiten por la misma CPU y un test
-que falla por el hardware del que lo corre no sirve.
+encolado no figura convertido en Postgres. Dos cosas solo avisan. Una es que
+las métricas de Prometheus no cuadren, por retraso de raspado o por contadores
+de réplicas ya destruidas. La otra es que escalar no reduzca la cola del pico,
+porque en una máquina con pocos núcleos las réplicas compiten por la misma CPU
+y un test que falla por el hardware del que lo corre no sirve.
 
-Deja sus archivos y bundles sin borrar, a propósito: mirar el dashboard
-*Conversión de documentos* de Grafana después —«Conversiones en curso»
-subiendo al escalar, «Trabajos en cola» con sus dos jorobas— es medio motivo
+Deja sus archivos y bundles sin borrar, a propósito. Mirar el dashboard
+*Conversión de documentos* de Grafana después, con «Conversiones en curso»
+subiendo al escalar y «Trabajos en cola» con sus dos jorobas, es medio motivo
 de correrlo. `make reset` lo limpia.
 
 Los tres sondean en vez de esperar un tiempo fijo, a propósito: Prometheus
@@ -771,7 +769,7 @@ database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
 scripts/         Pruebas contra el stack levantado (smoke, tolerancia, carga)
 ejemplos/        Documentos de entrada listos para probar y demostrar
-.env.example     Plantilla de configuración; se copia a .env, que no se versiona
+.env.example     Plantilla de configuración, se copia a .env (que no se versiona)
 ```
 
 ## Desarrollo del backend
@@ -787,8 +785,8 @@ go test ./...
 Para ejecutarlo fuera de Docker se necesita tener Postgres, MinIO y RabbitMQ
 accesibles, además de las variables de entorno definidas en
 `docker-compose.yml` (`DATABASE_URL`, `RABBITMQ_URL`, `JWT_SECRET`,
-`MINIO_*`, etc. — ver `backend/internal/config/config.go` para la lista
-completa y sus valores por defecto).
+`MINIO_*`, etc.). `backend/internal/config/config.go` tiene la lista completa
+y sus valores por defecto.
 
 ## Desarrollo del frontend
 
@@ -802,11 +800,10 @@ npm test         # pruebas unitarias con Vitest
 ```
 
 `ng serve` redirige `/api/*` hacia `http://localhost:8080`
-([`proxy.conf.json`](frontend/proxy.conf.json)), que es el frontend en Docker
-—el cual a su vez hace de proxy inverso hacia el API—. Es decir: para
-desarrollar contra el backend basta con tener el stack levantado
-(`make up`); **el API no publica ningún puerto en el host y no hace falta que
-lo publique**.
+([`proxy.conf.json`](frontend/proxy.conf.json)), que es el frontend en Docker,
+y ese a su vez hace de proxy inverso hacia el API. Para desarrollar contra el
+backend basta con tener el stack levantado (`make up`). **El API no publica
+ningún puerto en el host y no hace falta que lo publique.**
 
 La sesión sigue funcionando entre los dos puertos porque la cookie se emite
 sin `Domain`, y las cookies de `localhost` no distinguen el puerto.
