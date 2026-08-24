@@ -757,6 +757,7 @@ database/        SQL de inicialización de Postgres
 observability/   Configuración de Prometheus y dashboards/provisioning de Grafana
 scripts/         Pruebas contra el stack levantado (smoke, tolerancia, carga)
 ejemplos/        Documentos de entrada listos para probar y demostrar
+.env.example     Plantilla de configuración; se copia a .env, que no se versiona
 ```
 
 ## Desarrollo del backend
