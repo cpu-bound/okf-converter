@@ -8,6 +8,306 @@ es un bundle: una carpeta autocontenida con un índice, una bitácora de la
 conversión y un documento Markdown por cada unidad lógica del documento
 original.
 
+**Operación:** [Cómo usar](#cómo-usar) · [Comandos make](#comandos-make) ·
+[Configuración](#configuración) · [Arquitectura](#arquitectura) ·
+[Diagramas](#diagramas)
+
+**Qué hace con los documentos:** [El bundle](#el-bundle) ·
+[Formatos y segmentación](#formatos-de-entrada-y-segmentación) ·
+[Validación](#validación-del-bundle) · [Descarga](#descarga-del-bundle) ·
+[Dashboard](#el-dashboard) · [API](#la-api)
+
+**Cómo se comporta bajo estrés:**
+[Idempotencia y reintentos](#idempotencia-y-reintentos) ·
+[Observabilidad](#observabilidad) ·
+[Probar el stack levantado](#probar-el-stack-levantado)
+
+## Cómo usar
+
+Requiere Docker y Docker Compose. Nada más: ni Go ni Node ni Angular hacen
+falta en la máquina, porque todo se compila dentro de los contenedores.
+
+```bash
+make up
+```
+
+Eso es todo. `make up` copia `.env.example` a `.env` si aún no existe y
+levanta el stack. Sin `make`, son dos comandos:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Una vez en ejecución:
+
+- App: http://localhost:8080 (crear una cuenta y luego iniciar sesión para acceder a `/dashboard`)
+- Consola de MinIO: http://localhost:9001 (`minioadmin` / `minioadminpassword`)
+- Panel de administración de RabbitMQ: http://localhost:15672 (`okf` / `okf_password`)
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3001 (`admin` / `admin`)
+
+La API no publica ningún puerto en el host: se accede a través del proxy
+inverso del frontend, en http://localhost:8080/api/.
+
+### Qué subir
+
+En [`ejemplos/`](ejemplos/) hay tres documentos listos para arrastrar a la
+aplicación, uno por cada veredicto que la validación puede emitir:
+
+| Archivo | Formato | Veredicto |
+| --- | --- | --- |
+| [`guia-despliegue.md`](ejemplos/guia-despliegue.md) | Markdown | `valid` |
+| [`manual-api.html`](ejemplos/manual-api.html) | HTML | `valid` |
+| [`plan-migracion.md`](ejemplos/plan-migracion.md) | Markdown | `valid_with_warnings` |
+
+Los tres producen seis unidades de conocimiento, así que sirven para comparar
+la salida entre formatos. Para ver el rechazo por formato, cualquier `.zip`
+vale: la API lo refuta con `415` antes de emitir la URL de subida.
+[`ejemplos/README.md`](ejemplos/README.md) explica cada caso.
+
+### Comprobar que funciona
+
+Con el stack arriba, tres guiones lo ejercitan de punta a punta sin tocar la
+interfaz —el detalle de cada uno está en
+[Probar el stack levantado](#probar-el-stack-levantado)—:
+
+```bash
+make smoke        # ~20 s   flujo completo y aislamiento entre usuarios
+make tolerancia   # ~3 min  idempotencia, reintentos y descartes
+make carga        # ~11 min carga multiusuario con perfil de horas punta
+```
+
+### Volver a empezar
+
+El esquema de Postgres se aplica solo en el primer arranque. Por eso, si ya
+habías levantado el stack con una versión anterior del esquema, hay que
+descartar los volúmenes —`init.sql` solo corre sobre una base vacía—:
+
+```bash
+make fresh          # equivale a make reset && make up
+```
+
+## Comandos make
+
+`make help` lista todos los targets. Los más usados:
+
+| Comando | Qué hace |
+| --- | --- |
+| `make up` | Levanta todo el stack en segundo plano |
+| `make up-fg` | Igual, en primer plano y con logs |
+| `make fresh` | Borra volúmenes y levanta el stack desde cero |
+| `make down` / `make reset` | Detiene los contenedores / además borra los volúmenes |
+| `make logs` / `make logs-one S=api` | Logs de todo / de un servicio |
+| `make scale SERVICE=worker N=3` | Escala un servicio |
+| `make queue` | Estado de las tres colas de conversión en RabbitMQ |
+| `make psql` | Consola de PostgreSQL |
+| `make urls` / `make config` | URLs y credenciales en uso / compose resuelto |
+| `make test` | Pruebas de backend y frontend |
+| `make check` | `go vet` + compilación + todas las pruebas |
+| `make smoke` | Prueba de punta a punta contra el stack levantado |
+| `make tolerancia` | Idempotencia, reintentos y descartes (detiene MinIO un rato) |
+| `make carga` | Carga multiusuario con perfil de horas punta y escalado en caliente |
+
+Los targets de pruebas y compilación corren dentro de contenedores, así que
+no hace falta tener Go ni Node instalados en la máquina.
+
+## Configuración
+
+Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
+`.env` de la raíz, fuera del código y fuera de `docker-compose.yml`, que solo
+describe el cableado entre servicios e interpola esas variables. `make urls`
+imprime las direcciones y credenciales realmente en uso, y `make config`
+muestra el compose ya resuelto.
+
+Ese `.env` **no está versionado**. El repositorio trae
+[`.env.example`](.env.example) con valores de desarrollo local, y `.env` sale
+de copiarlo:
+
+```bash
+cp .env.example .env
+```
+
+Ningún valor de configuración está escrito en el código ni en el compose, así
+que cambiar de entorno es cambiar ese archivo y nada más. Para un despliegue
+real hay que editar `JWT_SECRET`, todas las contraseñas y poner
+`APP_ENV=production`; como `.env` está en `.gitignore`, esas credenciales no
+pueden acabar en el repositorio por descuido.
+
+`APP_ENV=production` activa el flag `Secure` de la cookie de sesión, que
+exige servir la aplicación por HTTPS.
+
+El backend en Go lee estas variables desde el entorno del proceso; ninguna
+tiene valor de configuración escrito en el código. La lista completa, con sus
+valores por defecto, está en `backend/internal/config/config.go`.
+
+Las que gobiernan los workers:
+
+| Variable | Por defecto | Qué controla |
+| --- | --- | --- |
+| `WORKER_REPLICAS` | `2` | Contenedores de worker (`make scale SERVICE=worker N=4`) |
+| `WORKER_CONCURRENCY` | `2` | Trabajos en paralelo dentro de cada contenedor |
+| `WORKER_MAX_ATTEMPTS` | `3` | Intentos antes de descartar. Con `1` no hay reintentos automáticos |
+| `WORKER_RETRY_DELAY_SECONDS` | `10` | Espera entre intentos |
+
+`WORKER_RETRY_DELAY_SECONDS` es un atributo de la cola `file_conversion.retry`,
+así que cambiarlo solo surte efecto sobre una cola que todavía no exista: hay
+que borrarla, o `make reset`.
+
+## Arquitectura
+
+| Servicio     | Tecnología                         | Propósito                                     |
+| ------------ | ----------------------------------- | ----------------------------------------------- |
+| `frontend`   | Angular 21, servido con Nginx       | Páginas de autenticación + dashboard            |
+| `api`        | Go                                   | API REST, autenticación, publica trabajos       |
+| `worker`     | Go                                   | Consume trabajos y ejecuta la conversión        |
+| `db`         | PostgreSQL 17                       | Usuarios, archivos, trabajos y validaciones     |
+| `minio`      | MinIO                               | Documentos subidos y bundles generados          |
+| `rabbitmq`   | RabbitMQ                            | Colas de trabajos: principal, reintentos y descartes |
+| `prometheus` | Prometheus                          | Métricas de `api` y de cada réplica de `worker` |
+| `grafana`    | Grafana                             | Dashboards sobre las métricas de Prometheus     |
+
+Flujo de subida: el frontend pide al API una URL prefirmada, sube el archivo
+directamente a MinIO —los bytes nunca pasan por el API— y luego confirma la
+subida. El API encola un trabajo en RabbitMQ y responde de inmediato, sin
+esperar a la conversión.
+
+La descarga, en cambio, **sí** pasa por el API: es el único punto donde se
+puede exigir que quien pide sea el dueño del archivo y que el bundle haya
+pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
+
+El navegador solo habla con `frontend`: Nginx sirve la aplicación compilada y
+hace de proxy inverso hacia `api`, que no publica ningún puerto al host. El
+`proxy_pass` apunta a una variable y no al nombre literal, que es lo que
+obliga a Nginx a resolver el DNS en cada petición: con el nombre literal
+cachea la IP al arrancar, y basta recrear el contenedor del API para que quede
+apuntando a una IP que Docker ya reasignó —normalmente a un worker, que
+responde `404` a todo lo que no sea `/metrics`—. El síntoma parece un error de
+rutas del API cuando en realidad el tráfico nunca llegó ahí.
+
+`api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
+del mismo módulo de Go, construidos en la misma imagen y separados a
+propósito: el API solo publica en la cola y el worker solo consume. Comparten
+la base de datos, el almacenamiento y la cola, pero nunca se comunican entre
+sí. Por eso la conversión no puede ocupar una petición HTTP, y los workers se
+escalan sin tocar el API:
+
+```bash
+make scale N=4          # docker compose up -d --scale worker=4
+```
+
+Cada contenedor de worker convierte `WORKER_CONCURRENCY` trabajos en
+paralelo, así que el paralelismo total es réplicas × concurrencia. RabbitMQ
+entrega cada trabajo a un solo consumidor, con `prefetch` acotado para que la
+carga se reparta en vez de que un consumidor acapare la cola.
+
+## Diagramas
+
+### Arquitectura de contenedores
+
+Cada bloque es un contenedor de `docker-compose.yml`; las flechas indican
+qué contenedores se comunican entre sí y con qué propósito.
+
+```mermaid
+flowchart LR
+    Browser(["🌐 Navegador"])
+
+    subgraph app ["Aplicación"]
+        Frontend["frontend\nAngular + Nginx\n:8080"]
+        API["api\nGo\nsolo publica"]
+        Worker["worker × N\nGo\nsolo consume"]
+    end
+
+    subgraph data ["Datos y almacenamiento"]
+        DB[("db\nPostgreSQL 17")]
+        Minio[("minio\nMinIO")]
+        Rabbit["rabbitmq\nRabbitMQ"]
+    end
+
+    subgraph obs ["Observabilidad"]
+        Prom["prometheus"]
+        Grafana["grafana\n:3001"]
+    end
+
+    Browser -- "HTTP :8080" --> Frontend
+    Frontend -- "proxy /api/*" --> API
+    Browser -- "sube con URL prefirmada\n(los bytes no pasan por el API)" --> Minio
+
+    API -- "SQL: usuarios, archivos,\ntrabajos, validaciones" --> DB
+    API -- "firma URLs de subida;\nlee el .zip para servirlo" --> Minio
+    API -- "publica trabajos" --> Rabbit
+
+    Rabbit -- "un trabajo por worker" --> Worker
+    Worker -- "SQL: reclamo del trabajo,\nestado, validación" --> DB
+    Worker -- "lee el original,\nescribe el bundle" --> Minio
+    Worker -- "maneja intentos fallidos" --> Rabbit
+
+    Prom -- "raspa /metrics" --> API
+    Prom -- "descubre las réplicas\npor DNS y raspa /metrics" --> Worker
+    Grafana -- "consulta métricas" --> Prom
+```
+
+### Flujo de datos y proceso de decisión
+
+Desde que un usuario sube un archivo hasta que puede descargar el bundle,
+incluyendo las decisiones que toma el sistema en cada paso (validación de
+tamaño, formato del documento, tamaño de los bloques, validación del bundle
+generado y resultado final de la conversión).
+
+```mermaid
+flowchart TD
+    A(["Usuario selecciona un archivo"]) --> B["Frontend pide una URL de subida prefirmada\nPOST /api/files/upload-url"]
+    B --> C["API crea el registro del archivo en estado 'pending'\ny firma una URL de subida hacia MinIO"]
+    C --> D["El navegador sube el archivo\ndirectamente a MinIO"]
+    D --> E["Frontend confirma la subida\nPOST /api/files/:id/confirm"]
+    E --> F{"¿El tamaño subido\ncoincide con el declarado?"}
+    F -- No --> F1(["Se elimina el objeto y el registro\nError 409"])
+    F -- Sí --> G["Archivo pasa a 'ready'\nse encola un trabajo en RabbitMQ"]
+    G --> H(["API responde de inmediato,\nsin URL de descarga: todavía no hay bundle"])
+    G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
+    I --> I1{"¿Logra reclamar el trabajo?\n(transición atómica en Postgres)"}
+    I1 -- No --> I2(["Entrega duplicada o trabajo ya hecho:\nack y nada más — un solo efecto final"])
+    I1 -- Sí --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
+    J --> K{"¿Qué formato tiene?"}
+    K -- ".md" --> L1["Encabezados '#' y subrayados"]
+    K -- ".html" --> L2["Se renderiza como Markdown:\nh1-h6 → encabezados"]
+    K -- ".txt / .pdf" --> L3["Encabezados, secciones numeradas\ny palabras clave (Capítulo, Sección…)"]
+    K -- ".csv" --> L4["Cada fila es una unidad"]
+    L1 --> M{"¿Se detectó\nestructura?"}
+    L2 --> M
+    L3 --> M
+    M -- Sí --> M1["Una unidad por sección del nivel más alto\nque de verdad divide el documento;\nlas subsecciones quedan dentro de la suya"]
+    M -- No --> N{"¿Documento\nbreve?"}
+    N -- Sí --> N1["Todo el documento\nes un único concepto"]
+    N -- No --> N2["Se divide por párrafos, cortando bloques\nde más de 20.000 bytes sin romper UTF-8"]
+    M1 --> V
+    N1 --> V
+    N2 --> V
+    L4 --> V
+    V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
+    V --> W["Se valida el bundle todavía en memoria:\nestructura mínima y enlaces (plataforma)\n+ frontmatter y campo 'type' (OKF)"]
+    W --> W1["Se guarda el veredicto y el informe\nregla por regla en la BD, pase o no"]
+    W1 --> X{"¿Clasificación?"}
+    X -- "inválido" --> S
+    X -- "válido / válido con advertencias" --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
+    O --> P["Se empaqueta el bundle en un .zip\ny se guarda en su clave determinista"]
+    P --> Q{"¿La conversión tuvo éxito?"}
+    Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
+    Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
+    S --> S1{"¿Quedan intentos?"}
+    S1 -- Sí --> S2["Trabajo vuelve a 'queued' y archivo a 'ready';\nel mensaje espera en file_conversion.retry"]
+    S2 -. vence el TTL .-> I
+    S1 -- No --> S3(["El mensaje va a file_conversion.dead.\nEl archivo queda 'failed' con el motivo"])
+    R --> U["El frontend sondea GET /api/files hasta que\nno queda nada en 'ready' ni 'converting',\ny habilita la descarga"]
+    U --> U0["El usuario descarga por la API\nGET /api/files/:id/bundle"]
+    U0 --> U1
+    U1{"¿Es el dueño\ny está publicado?"}
+    U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
+    U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
+    S3 --> T["El usuario puede pedir un reintento manual\nPOST /api/files/:id/retry — crea un trabajo nuevo"]
+    T -.-> I
+```
+
 ## El bundle
 
 ```
@@ -324,292 +624,6 @@ pendiente es un valor instantáneo, no un acumulado, y quien lo conoce es
 RabbitMQ: el plugin `rabbitmq_prometheus` viene activo de fábrica en la imagen
 y publica la profundidad de cada cola como gauge en el puerto 15692. El
 dashboard lee de ahí.
-
-## Arquitectura
-
-| Servicio     | Tecnología                         | Propósito                                     |
-| ------------ | ----------------------------------- | ----------------------------------------------- |
-| `frontend`   | Angular 21, servido con Nginx       | Páginas de autenticación + dashboard            |
-| `api`        | Go                                   | API REST, autenticación, publica trabajos       |
-| `worker`     | Go                                   | Consume trabajos y ejecuta la conversión        |
-| `db`         | PostgreSQL 17                       | Usuarios, archivos, trabajos y validaciones     |
-| `minio`      | MinIO                               | Documentos subidos y bundles generados          |
-| `rabbitmq`   | RabbitMQ                            | Colas de trabajos: principal, reintentos y descartes |
-| `prometheus` | Prometheus                          | Métricas de `api` y de cada réplica de `worker` |
-| `grafana`    | Grafana                             | Dashboards sobre las métricas de Prometheus     |
-
-Flujo de subida: el frontend pide al API una URL prefirmada, sube el archivo
-directamente a MinIO —los bytes nunca pasan por el API— y luego confirma la
-subida. El API encola un trabajo en RabbitMQ y responde de inmediato, sin
-esperar a la conversión.
-
-La descarga, en cambio, **sí** pasa por el API: es el único punto donde se
-puede exigir que quien pide sea el dueño del archivo y que el bundle haya
-pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
-
-El navegador solo habla con `frontend`: Nginx sirve la aplicación compilada y
-hace de proxy inverso hacia `api`, que no publica ningún puerto al host. El
-`proxy_pass` apunta a una variable y no al nombre literal, que es lo que
-obliga a Nginx a resolver el DNS en cada petición: con el nombre literal
-cachea la IP al arrancar, y basta recrear el contenedor del API para que quede
-apuntando a una IP que Docker ya reasignó —normalmente a un worker, que
-responde `404` a todo lo que no sea `/metrics`—. El síntoma parece un error de
-rutas del API cuando en realidad el tráfico nunca llegó ahí.
-
-`api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
-del mismo módulo de Go, construidos en la misma imagen y separados a
-propósito: el API solo publica en la cola y el worker solo consume. Comparten
-la base de datos, el almacenamiento y la cola, pero nunca se comunican entre
-sí. Por eso la conversión no puede ocupar una petición HTTP, y los workers se
-escalan sin tocar el API:
-
-```bash
-make scale N=4          # docker compose up -d --scale worker=4
-```
-
-Cada contenedor de worker convierte `WORKER_CONCURRENCY` trabajos en
-paralelo, así que el paralelismo total es réplicas × concurrencia. RabbitMQ
-entrega cada trabajo a un solo consumidor, con `prefetch` acotado para que la
-carga se reparta en vez de que un consumidor acapare la cola.
-
-## Diagramas
-
-### Arquitectura de contenedores
-
-Cada bloque es un contenedor de `docker-compose.yml`; las flechas indican
-qué contenedores se comunican entre sí y con qué propósito.
-
-```mermaid
-flowchart LR
-    Browser(["🌐 Navegador"])
-
-    subgraph app ["Aplicación"]
-        Frontend["frontend\nAngular + Nginx\n:8080"]
-        API["api\nGo\nsolo publica"]
-        Worker["worker × N\nGo\nsolo consume"]
-    end
-
-    subgraph data ["Datos y almacenamiento"]
-        DB[("db\nPostgreSQL 17")]
-        Minio[("minio\nMinIO")]
-        Rabbit["rabbitmq\nRabbitMQ"]
-    end
-
-    subgraph obs ["Observabilidad"]
-        Prom["prometheus"]
-        Grafana["grafana\n:3001"]
-    end
-
-    Browser -- "HTTP :8080" --> Frontend
-    Frontend -- "proxy /api/*" --> API
-    Browser -- "sube con URL prefirmada\n(los bytes no pasan por el API)" --> Minio
-
-    API -- "SQL: usuarios, archivos,\ntrabajos, validaciones" --> DB
-    API -- "firma URLs de subida;\nlee el .zip para servirlo" --> Minio
-    API -- "publica trabajos" --> Rabbit
-
-    Rabbit -- "un trabajo por worker" --> Worker
-    Worker -- "SQL: reclamo del trabajo,\nestado, validación" --> DB
-    Worker -- "lee el original,\nescribe el bundle" --> Minio
-    Worker -- "maneja intentos fallidos" --> Rabbit
-
-    Prom -- "raspa /metrics" --> API
-    Prom -- "descubre las réplicas\npor DNS y raspa /metrics" --> Worker
-    Grafana -- "consulta métricas" --> Prom
-```
-
-### Flujo de datos y proceso de decisión
-
-Desde que un usuario sube un archivo hasta que puede descargar el bundle,
-incluyendo las decisiones que toma el sistema en cada paso (validación de
-tamaño, formato del documento, tamaño de los bloques, validación del bundle
-generado y resultado final de la conversión).
-
-```mermaid
-flowchart TD
-    A(["Usuario selecciona un archivo"]) --> B["Frontend pide una URL de subida prefirmada\nPOST /api/files/upload-url"]
-    B --> C["API crea el registro del archivo en estado 'pending'\ny firma una URL de subida hacia MinIO"]
-    C --> D["El navegador sube el archivo\ndirectamente a MinIO"]
-    D --> E["Frontend confirma la subida\nPOST /api/files/:id/confirm"]
-    E --> F{"¿El tamaño subido\ncoincide con el declarado?"}
-    F -- No --> F1(["Se elimina el objeto y el registro\nError 409"])
-    F -- Sí --> G["Archivo pasa a 'ready'\nse encola un trabajo en RabbitMQ"]
-    G --> H(["API responde de inmediato,\nsin URL de descarga: todavía no hay bundle"])
-    G -. async .-> I["Un worker (contenedor aparte)\nconsume el trabajo de RabbitMQ"]
-    I --> I1{"¿Logra reclamar el trabajo?\n(transición atómica en Postgres)"}
-    I1 -- No --> I2(["Entrega duplicada o trabajo ya hecho:\nack y nada más — un solo efecto final"])
-    I1 -- Sí --> J["Archivo pasa a 'converting'\nse descarga el objeto original desde MinIO"]
-    J --> K{"¿Qué formato tiene?"}
-    K -- ".md" --> L1["Encabezados '#' y subrayados"]
-    K -- ".html" --> L2["Se renderiza como Markdown:\nh1-h6 → encabezados"]
-    K -- ".txt / .pdf" --> L3["Encabezados, secciones numeradas\ny palabras clave (Capítulo, Sección…)"]
-    K -- ".csv" --> L4["Cada fila es una unidad"]
-    L1 --> M{"¿Se detectó\nestructura?"}
-    L2 --> M
-    L3 --> M
-    M -- Sí --> M1["Una unidad por sección del nivel más alto\nque de verdad divide el documento;\nlas subsecciones quedan dentro de la suya"]
-    M -- No --> N{"¿Documento\nbreve?"}
-    N -- Sí --> N1["Todo el documento\nes un único concepto"]
-    N -- No --> N2["Se divide por párrafos, cortando bloques\nde más de 20.000 bytes sin romper UTF-8"]
-    M1 --> V
-    N1 --> V
-    N2 --> V
-    L4 --> V
-    V["Se arma el bundle: index.md con los enlaces\nen orden, log.md con la bitácora,\ny un .md por unidad"]
-    V --> W["Se valida el bundle todavía en memoria:\nestructura mínima y enlaces (plataforma)\n+ frontmatter y campo 'type' (OKF)"]
-    W --> W1["Se guarda el veredicto y el informe\nregla por regla en la BD, pase o no"]
-    W1 --> X{"¿Clasificación?"}
-    X -- "inválido" --> S
-    X -- "válido / válido con advertencias" --> O["Cada archivo del bundle se guarda\ncomo objeto en MinIO y se registra en la BD"]
-    O --> P["Se empaqueta el bundle en un .zip\ny se guarda en su clave determinista"]
-    P --> Q{"¿La conversión tuvo éxito?"}
-    Q -- Sí --> R(["Archivo 'converted': el bundle está publicado"])
-    Q -- No --> S(["Archivo 'failed'\nno se publicó ningún bundle"])
-    S --> S1{"¿Quedan intentos?"}
-    S1 -- Sí --> S2["Trabajo vuelve a 'queued' y archivo a 'ready';\nel mensaje espera en file_conversion.retry"]
-    S2 -. vence el TTL .-> I
-    S1 -- No --> S3(["El mensaje va a file_conversion.dead.\nEl archivo queda 'failed' con el motivo"])
-    R --> U["El frontend sondea GET /api/files hasta que\nno queda nada en 'ready' ni 'converting',\ny habilita la descarga"]
-    U --> U0["El usuario descarga por la API\nGET /api/files/:id/bundle"]
-    U0 --> U1
-    U1{"¿Es el dueño\ny está publicado?"}
-    U1 -- Sí --> U2(["La API hace stream del .zip\ndesde MinIO"])
-    U1 -- No --> U3(["404 si no es suyo,\n409 con el motivo si no está publicado"])
-    S3 --> T["El usuario puede pedir un reintento manual\nPOST /api/files/:id/retry — crea un trabajo nuevo"]
-    T -.-> I
-```
-
-## Ejecutar la aplicación
-
-Requiere Docker y Docker Compose. Nada más: ni Go ni Node ni Angular hacen
-falta en la máquina, porque todo se compila dentro de los contenedores.
-
-```bash
-make up
-```
-
-Eso es todo. `make up` copia `.env.example` a `.env` si aún no existe y
-levanta el stack. Sin `make`, son dos comandos:
-
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-Una vez en ejecución:
-
-- App: http://localhost:8080 (crear una cuenta y luego iniciar sesión para acceder a `/dashboard`)
-- Consola de MinIO: http://localhost:9001 (`minioadmin` / `minioadminpassword`)
-- Panel de administración de RabbitMQ: http://localhost:15672 (`okf` / `okf_password`)
-- Prometheus: http://localhost:9090
-- Grafana: http://localhost:3001 (`admin` / `admin`)
-
-La API no publica ningún puerto en el host: se accede a través del proxy
-inverso del frontend, en http://localhost:8080/api/.
-
-### Qué subir
-
-En [`ejemplos/`](ejemplos/) hay tres documentos listos para arrastrar a la
-aplicación, uno por cada veredicto que la validación puede emitir:
-
-| Archivo | Formato | Veredicto |
-| --- | --- | --- |
-| [`guia-despliegue.md`](ejemplos/guia-despliegue.md) | Markdown | `valid` |
-| [`manual-api.html`](ejemplos/manual-api.html) | HTML | `valid` |
-| [`plan-migracion.md`](ejemplos/plan-migracion.md) | Markdown | `valid_with_warnings` |
-
-Los tres producen seis unidades de conocimiento, así que sirven para comparar
-la salida entre formatos. Para ver el rechazo por formato, cualquier `.zip`
-vale: la API lo refuta con `415` antes de emitir la URL de subida.
-[`ejemplos/README.md`](ejemplos/README.md) explica cada caso.
-
-### Comprobar que funciona
-
-Con el stack arriba, tres guiones lo ejercitan de punta a punta sin tocar la
-interfaz —el detalle de cada uno está en
-[Probar el stack levantado](#probar-el-stack-levantado)—:
-
-```bash
-make smoke        # ~20 s   flujo completo y aislamiento entre usuarios
-make tolerancia   # ~3 min  idempotencia, reintentos y descartes
-make carga        # ~11 min carga multiusuario con perfil de horas punta
-```
-
-### Volver a empezar
-
-El esquema de Postgres se aplica solo en el primer arranque. Por eso, si ya
-habías levantado el stack con una versión anterior del esquema, hay que
-descartar los volúmenes —`init.sql` solo corre sobre una base vacía—:
-
-```bash
-make fresh          # equivale a make reset && make up
-```
-
-## Configuración
-
-Toda la configuración —credenciales, puertos y endpoints— vive en el archivo
-`.env` de la raíz, fuera del código y fuera de `docker-compose.yml`, que solo
-describe el cableado entre servicios e interpola esas variables. `make urls`
-imprime las direcciones y credenciales realmente en uso, y `make config`
-muestra el compose ya resuelto.
-
-Ese `.env` **no está versionado**. El repositorio trae
-[`.env.example`](.env.example) con valores de desarrollo local, y `.env` sale
-de copiarlo:
-
-```bash
-cp .env.example .env
-```
-
-Ningún valor de configuración está escrito en el código ni en el compose, así
-que cambiar de entorno es cambiar ese archivo y nada más. Para un despliegue
-real hay que editar `JWT_SECRET`, todas las contraseñas y poner
-`APP_ENV=production`; como `.env` está en `.gitignore`, esas credenciales no
-pueden acabar en el repositorio por descuido.
-
-`APP_ENV=production` activa el flag `Secure` de la cookie de sesión, que
-exige servir la aplicación por HTTPS.
-
-El backend en Go lee estas variables desde el entorno del proceso; ninguna
-tiene valor de configuración escrito en el código. La lista completa, con sus
-valores por defecto, está en `backend/internal/config/config.go`.
-
-Las que gobiernan los workers:
-
-| Variable | Por defecto | Qué controla |
-| --- | --- | --- |
-| `WORKER_REPLICAS` | `2` | Contenedores de worker (`make scale SERVICE=worker N=4`) |
-| `WORKER_CONCURRENCY` | `2` | Trabajos en paralelo dentro de cada contenedor |
-| `WORKER_MAX_ATTEMPTS` | `3` | Intentos antes de descartar. Con `1` no hay reintentos automáticos |
-| `WORKER_RETRY_DELAY_SECONDS` | `10` | Espera entre intentos |
-
-`WORKER_RETRY_DELAY_SECONDS` es un atributo de la cola `file_conversion.retry`,
-así que cambiarlo solo surte efecto sobre una cola que todavía no exista: hay
-que borrarla, o `make reset`.
-
-## Comandos make
-
-`make help` lista todos los targets. Los más usados:
-
-| Comando | Qué hace |
-| --- | --- |
-| `make up` | Levanta todo el stack en segundo plano |
-| `make up-fg` | Igual, en primer plano y con logs |
-| `make fresh` | Borra volúmenes y levanta el stack desde cero |
-| `make down` / `make reset` | Detiene los contenedores / además borra los volúmenes |
-| `make logs` / `make logs-one S=api` | Logs de todo / de un servicio |
-| `make scale SERVICE=worker N=3` | Escala un servicio |
-| `make queue` | Estado de las tres colas de conversión en RabbitMQ |
-| `make psql` | Consola de PostgreSQL |
-| `make urls` / `make config` | URLs y credenciales en uso / compose resuelto |
-| `make test` | Pruebas de backend y frontend |
-| `make check` | `go vet` + compilación + todas las pruebas |
-| `make smoke` | Prueba de punta a punta contra el stack levantado |
-| `make tolerancia` | Idempotencia, reintentos y descartes (detiene MinIO un rato) |
-| `make carga` | Carga multiusuario con perfil de horas punta y escalado en caliente |
-
-Los targets de pruebas y compilación corren dentro de contenedores, así que
-no hace falta tener Go ni Node instalados en la máquina.
 
 ## Probar el stack levantado
 
