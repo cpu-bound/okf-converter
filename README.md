@@ -177,12 +177,10 @@ pasado la validación (ver [Descarga del bundle](#descarga-del-bundle)).
 
 El navegador solo habla con `frontend`. Nginx sirve la aplicación compilada y
 hace de proxy inverso hacia `api`, que no publica ningún puerto al host. El
-`proxy_pass` apunta a una variable y no al nombre literal, que es lo que
-obliga a Nginx a resolver el DNS en cada petición. Con el nombre literal
-cachea la IP al arrancar, y basta recrear el contenedor del API para que quede
-apuntando a una IP que Docker ya reasignó, normalmente a un worker, que
-responde `404` a todo lo que no sea `/metrics`. El síntoma parece un error de
-rutas del API cuando el tráfico nunca llegó ahí.
+`proxy_pass` apunta a una variable, no al nombre literal, porque así Nginx
+resuelve el DNS en cada petición: con el nombre literal cachea la IP al
+arrancar y se queda apuntando a una IP que Docker reasignó al recrear el
+contenedor.
 
 `api` y `worker` son dos binarios (`backend/cmd/api` y `backend/cmd/worker`)
 del mismo módulo de Go, construidos en la misma imagen y separados a
@@ -370,9 +368,9 @@ segmentación parte de la estructura del propio documento:
 | PDF (`.pdf`) | Se extrae el texto reconstruyendo los espacios por posición de carácter y se trata como texto plano |
 | CSV (`.csv`) | Cada fila es una unidad. Ninguna detección de encabezados encontraría sus divisiones reales |
 
-Dos decisiones que vale la pena conocer:
+Dos decisiones:
 
-- **Se segmenta por el nivel más alto que de verdad divide el documento.** Un
+- **Se segmenta por el nivel más alto que divide el documento.** Un
   informe cuyo único encabezado de nivel 1 es su propio título se divide por
   sus secciones de nivel 2, no se deja entero. Las subsecciones quedan dentro
   de la sección a la que pertenecen.
@@ -382,8 +380,8 @@ Dos decisiones que vale la pena conocer:
   (más de 20.000 bytes) cae al respaldo de dividir por párrafos.
 
 El formato se valida en la recepción: una subida que el pipeline no podría
-convertir se rechaza con `415` antes de firmar la URL, en vez de aceptarse y
-fallar en un worker minutos después.
+convertir se rechaza con `415` antes de firmar la URL, en vez de fallar en un
+worker minutos después.
 
 ## Validación del bundle
 
@@ -583,17 +581,14 @@ diferente, y en un único contador de fallos no se distinguirían.
 `convert_jobs_skipped_total` contando hacia arriba no es un problema: cada
 unidad es una conversión repetida que **no** ocurrió.
 
-Que la API y los workers expongan las suyas por separado es lo que permite
-ver la diferencia entre lo encolado y lo procesado como un respaldo real de
-la cola, en vez de quedar escondida dentro de un solo proceso.
+Que la API y los workers expongan las suyas por separado es lo que hace
+visible la diferencia entre lo encolado y lo procesado.
 
-El trabajo pendiente, en cambio, **no** se deriva restando contadores. Se
-intentó y estaba mal: los contadores viven en cada réplica de worker, así que
-al reiniciar una vuelven a cero y la resta se va a negativo. El trabajo
-pendiente es un valor instantáneo, no un acumulado, y quien lo conoce es
-RabbitMQ: el plugin `rabbitmq_prometheus` viene activo de fábrica en la imagen
-y publica la profundidad de cada cola como gauge en el puerto 15692. El
-dashboard lee de ahí.
+El trabajo pendiente, en cambio, **no** se deriva restando contadores: viven
+en cada réplica de worker, así que al reiniciar una vuelven a cero y la resta
+se va a negativo. Es un valor instantáneo, no un acumulado, y quien lo conoce
+es RabbitMQ, que publica la profundidad de cada cola como gauge en el puerto
+15692.
 
 ## Probar el stack levantado
 
