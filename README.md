@@ -505,30 +505,23 @@ autenticado: el `user_id` va en la consulta SQL, no en un filtro posterior.
 
 ### Una entrega duplicada no convierte dos veces
 
-Antes de convertir nada, el worker **reclama el trabajo** con una transición
-atómica en Postgres. Gana un solo reclamante, y cualquier otra entrega del mismo
-trabajo recibe «no reclamado», hace `ack` y no toca el convertidor. Es lo que
-exige el §6: un único efecto final y, a lo sumo, un bundle publicado.
-
-Qué estados se pueden reclamar:
+Antes de convertir, el worker **reclama el trabajo** con una transición
+atómica en Postgres. Gana un solo reclamante. Cualquier otra entrega hace
+`ack` y no toca el convertidor. Es lo que exige el §6: un único efecto final
+y, a lo sumo, un bundle publicado.
 
 | Estado del trabajo | ¿Reclamable? | Por qué |
 | --- | --- | --- |
 | `queued` | Sí | Trabajo nuevo, o devuelto a la espera para otro intento |
 | `failed` | Sí | El intento anterior terminó y perdió. Reintentar es el objetivo |
-| `converting` | Solo si el mensaje viene marcado como reentrega | RabbitMQ solo reentrega cuando el canal del consumidor anterior ya no existe, así que un trabajo atascado en `converting` con un mensaje reentregado es uno cuyo worker se murió a mitad. Negarlo dejaría el archivo varado para siempre |
-| `converted` | Nunca | El bundle ya está publicado, y publicar un segundo es justo lo que el §6 prohíbe |
+| `converting` | Solo si viene marcado como reentrega | RabbitMQ solo reentrega cuando el canal del consumidor anterior ya no existe, así que es un trabajo cuyo worker murió a mitad. Negarlo dejaría el archivo varado |
+| `converted` | Nunca | Publicar un segundo bundle es justo lo que el §6 prohíbe |
 
-La distinción de la tercera fila es la que hace que esto no sea una elección
-entre idempotencia y recuperación: **un doble `publish` no viene marcado como
-reentrega**, así que sigue quedando en un solo efecto.
-
-Se puede demostrar publicando el mismo mensaje dos veces desde la consola de
-RabbitMQ. Ayuda que el `.zip` ya sea determinista.
+La tercera fila evita tener que elegir entre idempotencia y recuperación:
+**un doble `publish` no viene marcado como reentrega**, así que sigue quedando
+en un solo efecto.
 
 ### Reintentos automáticos acotados
-
-El pipeline corre sobre tres colas duraderas:
 
 ```
 file_conversion         trabajos por convertir
@@ -536,54 +529,33 @@ file_conversion.retry   espera entre intentos, vence hacia la principal
 file_conversion.dead    intentos agotados, para inspección
 ```
 
-`file_conversion.retry` no tiene consumidor: lleva un TTL de mensaje y
-devuelve por dead-letter a la cola principal cuando vence. Es la forma
-estándar de retrasar una reentrega en RabbitMQ sin plugins.
+`file_conversion.retry` no tiene consumidor. Lleva un TTL y devuelve por
+dead-letter a la principal cuando vence, que es la forma estándar de retrasar
+una reentrega en RabbitMQ sin plugins. El TTL es atributo de la cola, no de
+cada mensaje: un TTL por mensaje solo expira los de la cabeza, y una espera
+larga bloquearía las cortas de atrás. El costo es que la espera es fija.
 
-**La espera es del atributo de la cola, no de cada mensaje**, y eso es
-deliberado: un TTL por mensaje en una cola compartida solo expira los de la
-cabeza, así que una espera larga bloquearía todas las cortas que quedaran
-detrás. El costo es que la espera es fija y no exponencial.
+Al agotar `WORKER_MAX_ATTEMPTS` el mensaje va a descartes y el archivo queda
+en `failed` con el motivo. Sobre ese estado actúa el **reintento manual** del
+§5.2, que crea un trabajo nuevo enlazado al anterior por `retry_of`. Entre
+intento e intento, en cambio, el trabajo vuelve a `queued` y el archivo a
+`ready`: si no, el dashboard vería `failed`, lo daría por terminal y dejaría
+de sondear un trabajo que sigue en proceso.
 
-Al agotar `WORKER_MAX_ATTEMPTS` intentos, el mensaje va a la cola de
-descartes. El archivo y el trabajo quedan en `failed` con el motivo, que es lo
-que ve el usuario y sobre lo que actúa el **reintento manual** del §5.2. Ese
-reintento sigue existiendo y crea un trabajo nuevo, con su propio presupuesto
-de intentos, enlazado al anterior por `retry_of`.
-
-Entre intento e intento el trabajo vuelve a `queued` y el archivo a `ready`.
-Sin eso, el archivo se quedaría en `failed` entre intentos y tanto la API como
-el dashboard reportarían un fallo definitivo de un trabajo que sigue en
-proceso. El dashboard incluso dejaría de sondear, porque `failed` es terminal
-para él.
-
-Cada situación tiene su métrica: `convert_jobs_skipped_total`,
-`convert_jobs_retried_total` y `convert_jobs_dead_lettered_total{reason}`.
-Qué significa cada una está en [Observabilidad](#observabilidad).
-
-`make queue` muestra el estado de las tres colas.
+`make queue` muestra las tres colas. Las métricas están en
+[Observabilidad](#observabilidad).
 
 ### Si el broker se cae
 
-Una conexión AMQP abierta al arrancar solo sirve hasta el primer corte de red.
-Después, cada publicación falla con `channel/connection is not open` y nada la
-repara: el proceso sigue en pie, con su health en verde, sin encolar ni
-consumir nada. Es un fallo especialmente traicionero del lado del API, porque
-un publicador ocioso no da ninguna señal hasta que alguien sube un archivo.
+Un canal AMQP abierto al arrancar solo sirve hasta el primer corte de red.
+Después todo falla con `channel/connection is not open` y nada lo repara, con
+el proceso en pie y su health en verde. Por eso ni el API ni los workers
+guardan un canal fijo: piden uno sano en cada uso y lo reabren cuando el
+anterior murió, redeclarando las colas. Los workers vuelven a suscribirse con
+espera creciente hasta 30 s.
 
-Por eso ni el API ni los workers guardan un canal fijo. Ambos piden un canal
-sano en cada uso y lo reabren cuando el anterior murió, redeclarando las
-colas. Un reconecte no puede dar por hecho que el broker conservó la
-topología. El API reintenta la publicación una vez, porque el primer intento puede caer
-justo en el canal que acaba de morir. Los workers, además, vuelven a
-suscribirse con espera creciente hasta 30 s: un worker que deja de consumir en
-silencio es peor que uno que se cae, porque nadie se entera.
-
-Y si aun así no se pudo encolar, **el usuario se entera**: la API responde
-`503` con un mensaje que dice que el documento quedó guardado, y marca el
-archivo como `failed`, que es el único estado desde el que el dashboard ofrece
-reintentar. Antes respondía `200` y el archivo se quedaba sondeando un trabajo
-que nadie iba a recoger jamás.
+Si aun así no se pudo encolar, la API responde `503` y marca el archivo como
+`failed`, el único estado desde el que el dashboard ofrece reintentar.
 
 ## Observabilidad
 
@@ -625,8 +597,8 @@ dashboard lee de ahí.
 
 ## Probar el stack levantado
 
-Las pruebas unitarias (`make test`) no tocan la infraestructura, corren contra
-dobles. Lo que hay que demostrar solo se ve con todo levantado: que
+Las pruebas unitarias (`make test`) corren contra dobles y no tocan la
+infraestructura. Lo que hay que demostrar solo se ve con todo levantado: que
 el trabajo se convierte una sola vez, que un fallo se reintenta y acaba
 descartado, y que un usuario no ve los archivos de otro. Para eso hay tres
 guiones en `scripts/`, y los tres pasan por la API igual que lo haría el
@@ -639,39 +611,34 @@ make tolerancia   # ~3 min: detiene MinIO a propósito
 make carga        # ~11 min: ventana de 10 min, escala los workers y los restaura
 ```
 
-En [`ejemplos/`](ejemplos/) hay documentos listos para subir desde la
-interfaz, uno por cada veredicto que la validación puede emitir. Incluye el
-`valid_with_warnings`, que es el que cuesta improvisar en vivo.
+Los tres sondean en vez de esperar un tiempo fijo. Prometheus raspa cada 15 s
+y un intento fallido tarda lo que tarde el cliente de S3 en rendirse, bastante
+más que el retardo entre reintentos. Con un `sleep` fijo la prueba falla sin
+que falle nada.
 
 `make smoke` registra dos cuentas, rechaza un `.zip` con 415, sube un `.md`,
-espera a que un worker lo convierta, descarga el `.zip` y verifica por dentro
-que estén `index.md`, `log.md`, los conceptos, el frontmatter con `type` y la
-sección de validación en la bitácora. Cierra comprobando el aislamiento: que
-la segunda cuenta no vea nada en `GET /api/files` y que tanto el detalle como
-la descarga de un id ajeno devuelvan `404`.
+espera la conversión, descarga el `.zip` y verifica por dentro `index.md`,
+`log.md`, los conceptos, el frontmatter y la validación de la bitácora. Cierra
+con el aislamiento: la segunda cuenta no ve nada en `GET /api/files`, y el
+detalle y la descarga de un id ajeno dan `404`.
 
 `make tolerancia` cubre lo que no se ve desde la interfaz. Republica un
-mensaje ya procesado por la API de gestión de RabbitMQ y comprueba las dos
-cosas a la vez: que suba `convert_jobs_skipped_total` **y** que no aparezca un
-segundo bundle. Luego detiene MinIO, reencola, y sondea hasta que el trabajo
-agota sus intentos y el mensaje aterriza en `file_conversion.dead`. Al
-restaurar MinIO verifica que el trabajo se recupera, que es lo que hace el
-botón «Reintentar», y termina escalando los workers.
+mensaje ya procesado y comprueba las dos cosas a la vez: que suba
+`convert_jobs_skipped_total` **y** que no aparezca un segundo bundle. Luego
+detiene MinIO y sondea hasta que el trabajo agota sus intentos y cae en
+`file_conversion.dead`. Al restaurar MinIO verifica que se recupera, que es lo
+que hace el botón «Reintentar».
 
-`make carga` mide con números lo que el resto del README afirma en prosa: que
-el API solo publica en la cola, que el trabajo pendiente se acumula en
-RabbitMQ y no dentro de una petición HTTP, y que escalar workers absorbe una
-hora punta sin tocar el API.
+### La prueba de carga
 
-**La carga no es una ráfaga.** Llega repartida a lo largo de una ventana de
-diez minutos con forma de horas punta: dos picos separados por un valle, sobre
-un goteo de fondo. Ocho cuentas concurrentes suben documentos siguiendo ese
-calendario **y** sondean `GET /api/files` cada 2,5 s igual que haría su
-navegador. Esos sondeos son carga real, y son a la vez el contador de progreso
-del test, así que no hace falta pedirle nada extra al API. En el valle entre
-los dos picos el guion escala los workers de 2 a 6, que es lo que haría un
-operador que ve venir la segunda punta, y al terminar restaura
-`WORKER_REPLICAS`.
+`make carga` mide lo que el resto del README afirma en prosa: que el API solo
+publica en la cola, que el pendiente se acumula en RabbitMQ y no dentro de una
+petición HTTP, y que escalar workers absorbe una hora punta sin tocar el API.
+
+**No es una ráfaga.** Ocho cuentas suben documentos durante diez minutos con
+forma de horas punta, y sondean `GET /api/files` cada 2,5 s como haría su
+navegador. En el valle entre los dos picos el guion escala los workers de 2 a
+6 y al terminar restaura `WORKER_REPLICAS`.
 
 ```
    8.3 |               #                         #
@@ -683,69 +650,32 @@ operador que ve venir la segunda punta, y al terminar restaura
        doc/s en cubos de 10 s   (^ = momento del escalado)
 ```
 
-Todo es parametrizable: `VENTANA=900 PICO=15 ESCALA=8 make carga`, y
-`VENTANA=120 make carga` sirve de humo del propio guion en unos tres minutos.
+Es parametrizable: `VENTANA=900 PICO=15 ESCALA=8 make carga`, y
+`VENTANA=120 make carga` sirve de humo del propio guion en tres minutos.
 
-Cuatro decisiones del guion que valen una línea:
+Tres decisiones lo hacen medible en vez de anecdótico:
 
-- **Las llegadas se sortean como un proceso de Poisson de tasa variable**, no
-  a intervalos regulares. El tráfico real llega a rachas y con huecos, y es
-  esa irregularidad la que llena la cola. Un goteo perfectamente espaciado a
-  la misma media no la llenaría nunca.
-- **Los dos picos son el mismo sorteo.** Que sigan la misma distribución no
-  basta: con picos estrechos el azar manda, y una corrida puede darle al
-  segundo pico el doble de carga que al primero y apuntárselo al escalado. El
-  exceso sobre el valle se sortea una vez y se copia en los dos centros, así
-  que lo único que separa un pico del otro son los workers que había detrás.
-- **Los documentos son sintéticos, no los de `ejemplos/`.** Los de ejemplos
-  pesan menos de 3 KB, así que miden el overhead del pipeline y no su techo.
-  El guion genera tres perfiles (4 KB, 44 KB y 193 KB, con 4, 20 y 60
-  encabezados) y los cicla. Los largos son los que hacen que un pico cueste
-  cuando solo hay cuatro conversiones en paralelo.
-- **El backlog se lee de la API de gestión de RabbitMQ, no de Prometheus.** La
-  forma de la cola durante un pico es justo lo que se quiere ver, y Prometheus
-  raspa cada 15 s: se perdería el pico entero.
-- **Y la cuenta de «no se perdió ningún trabajo» se le hace a Postgres, no a
-  Prometheus.** Es la misma razón por la que el dashboard no deriva el trabajo
-  pendiente restando contadores (ver [Observabilidad](#observabilidad)),
-  llevada un paso más allá: los contadores de conversión viven dentro de cada
-  réplica de worker, así que cuando el guion devuelve los workers a su escala
-  **desaparecen con las réplicas que destruye**. Correr `make carga` y mirar
-  `sum(convert_jobs_processed_total)` antes y después lo enseña de golpe: 260
-  y luego 169, sin que se haya perdido una sola conversión. Por eso el guion
-  lee las métricas mientras las réplicas siguen vivas, y aun así la cuenta que
-  decide si el test pasa la saca de la base de datos.
+- **Las llegadas se sortean como un proceso de Poisson**, no a intervalos
+  regulares. Un goteo perfectamente espaciado a la misma media no llenaría la
+  cola nunca.
+- **Los dos picos son el mismo sorteo**, no solo la misma distribución. Así lo
+  único que separa un pico del otro son los workers que había detrás.
+- **La cuenta de «no se perdió nada» se le hace a Postgres, no a Prometheus.**
+  Los contadores viven dentro de cada réplica de worker y desaparecen con las
+  que el guion destruye al restaurar la escala. Es la misma razón por la que
+  el dashboard no deriva el pendiente restando contadores (ver
+  [Observabilidad](#observabilidad)).
 
-El reporte dibuja las llegadas y la cola a lo largo de la ventana, enfrenta
-los dos picos (cuánta cola acumuló cada uno y cuánto tardó en vaciarse) y
-cierra con dos mitades: lo que vio el cliente (percentiles de `upload-url`,
-del `PUT` a MinIO, de `confirm` y del sondeo) y lo que dice el servidor
-(encolados, procesados, reintentos, descartes, veredictos y duración p50/p95).
-La diferencia entre ambas **es** el respaldo de la cola.
+El reporte enfrenta los dos picos y cierra con lo que vio el cliente
+(percentiles de cada llamada) frente a lo que dice el servidor. La diferencia
+entre ambos **es** el respaldo de la cola. Incluye el **desfase**, lo que se
+retrasó cada subida respecto a su hora asignada: si crece, el cuello de
+botella está en el guion y el perfil medido fue más plano que el planeado.
 
-Hay además una medida del propio generador: el **desfase**, lo que se retrasó
-cada subida respecto a la hora que tenía asignada. Si crece, el cuello de
-botella está en el guion y no en el sistema, y el perfil que se midió fue más
-plano que el que se planeó. Es lo que separa una prueba de carga de una
-anécdota.
-
-Falla si algún `confirm` no devuelve `200`, si algún archivo acaba en
-`failed`, si algo llega a `.dead`, si la cola no se drena, o si algún documento
-encolado no figura convertido en Postgres. Dos cosas solo avisan. Una es que
-las métricas de Prometheus no cuadren, por retraso de raspado o por contadores
-de réplicas ya destruidas. La otra es que escalar no reduzca la cola del pico,
-porque en una máquina con pocos núcleos las réplicas compiten por la misma CPU
-y un test que falla por el hardware del que lo corre no sirve.
-
-Deja sus archivos y bundles sin borrar, a propósito. Mirar el dashboard
-*Conversión de documentos* de Grafana después, con «Conversiones en curso»
-subiendo al escalar y «Trabajos en cola» con sus dos jorobas, es medio motivo
-de correrlo. `make reset` lo limpia.
-
-Los tres sondean en vez de esperar un tiempo fijo, a propósito: Prometheus
-raspa cada 15 s y un intento fallido tarda lo que tarde el cliente de S3 en
-rendirse, que es bastante más que el retardo entre reintentos. Con un `sleep`
-fijo la prueba falla sin que falle nada.
+Falla si algún `confirm` no da `200`, si un archivo acaba en `failed`, si algo
+llega a `.dead`, si la cola no se drena o si un documento encolado no figura
+convertido en Postgres. Deja los archivos sin borrar a propósito, para poder
+mirar el dashboard de Grafana después. `make reset` lo limpia.
 
 ## Estructura del proyecto
 
